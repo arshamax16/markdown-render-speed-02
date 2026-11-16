@@ -1050,8 +1050,9 @@ function inlineParse(src, refs) {
         if (cl.ch === 126 && op.len !== cl.len) continue;
         // A phantom code span: an unmatched backtick run inside a link
         // text pairs with a later same-length code-span opening, and
-        // emphasis strictly between them does not form.
-        if (tickUnmatched.length && codeOpens.length) {
+        // emphasis strictly between them (and outside any link) does
+        // not form.
+        if (op.link === 0 && tickUnmatched.length && codeOpens.length) {
           let phantom = false;
           for (let u = 0; u < tickUnmatched.length && !phantom; u++) {
             const U = tickUnmatched[u];
