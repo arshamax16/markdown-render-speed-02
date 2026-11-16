@@ -423,6 +423,8 @@ function isExtStart(s, j) {
     return (s.charCodeAt(j + 1) | 32) === 116 && (s.charCodeAt(j + 2) | 32) === 112 && s.charCodeAt(j + 3) === 58 && s.charCodeAt(j + 4) === 47 && s.charCodeAt(j + 5) === 47;
   }
   if (c === 119) return s.startsWith('www.', j); // w: lowercase only
+  if (c === 109) return s.slice(j, j + 7).toLowerCase() === 'mailto:'; // m
+  if (c === 120) return s.slice(j, j + 5).toLowerCase() === 'xmpp:'; // x
   return false;
 }
 
@@ -430,8 +432,67 @@ function matchExtended(s, i, prev) {
   const n = s.length;
   let href = null;
   let start = i;
-  // scheme://
   const rest = s.slice(i);
+  // mailto: / xmpp: + email (+ one /segment for xmpp)
+  {
+    const low = rest.slice(0, 7).toLowerCase();
+    const isMailto = low.startsWith('mailto:');
+    const isXmpp = rest.slice(0, 5).toLowerCase() === 'xmpp:';
+    if (isMailto || isXmpp) {
+      const schemeLen = isMailto ? 7 : 5;
+      let p = i + schemeLen;
+      // local part
+      const ls = p;
+      while (p < n) {
+        const c = s.charCodeAt(p);
+        if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+            c === 46 || c === 33 || c === 35 || c === 36 || c === 37 || c === 38 ||
+            c === 39 || c === 43 || c === 47 || c === 61 || c === 63 || c === 94 ||
+            c === 95 || c === 96 || c === 123 || c === 124 || c === 125 || c === 126 || c === 45) p++;
+        else break;
+      }
+      if (p > ls && p < n && s.charCodeAt(p) === 64) {
+        p++;
+        const ds = p;
+        while (p < n) {
+          const c = s.charCodeAt(p);
+          if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 45) { p++; continue; }
+          if (c === 46) {
+            const nx = s.charCodeAt(p + 1);
+            if ((nx >= 48 && nx <= 57) || (nx >= 65 && nx <= 90) || (nx >= 97 && nx <= 122) || nx === 45) { p++; continue; }
+            break;
+          }
+          break;
+        }
+        const domain = s.slice(ds, p);
+        if (p > ds && domain.indexOf('.') >= 0 && domain.indexOf('..') < 0) {
+          if (!isXmpp) {
+            let url = s.slice(i, p);
+            url = trimAutolink(url);
+            if (url) return { end: i + url.length, href: url, text: url };
+          } else if (p < n && s.charCodeAt(p) === 47) {
+            // one path segment (no further '/')
+            let q = p + 1;
+            while (q < n) {
+              const c = s.charCodeAt(q);
+              if (isSpaceCode(c) || c === 60 || c === 47) break;
+              q++;
+            }
+            if (q > p + 1) p = q;
+            let url = s.slice(i, p);
+            url = trimAutolink(url);
+            if (url) return { end: i + url.length, href: url, text: url };
+          } else {
+            let url = s.slice(i, p);
+            url = trimAutolink(url);
+            if (url) return { end: i + url.length, href: url, text: url };
+          }
+        }
+      }
+      return null;
+    }
+  }
+  // scheme://
   let m = /^(?:https?|ftp):\/\//i.exec(rest);
   if (m) {
     start = i;
@@ -522,10 +583,63 @@ function trimAutolink(url) {
 // at position `at` (local part starts at or after `runStart`). The local part
 // chars are [A-Za-z0-9.!#$%&'+/=?^_`{|}~-] (note: no '*'). Returns the match
 // {start, end, href, text} or null.
+
+// Is position `j` (a _ or * inside a would-be local part) covered by a valid
+// email whose local part extends back across it? Scans forward over
+// local-part chars to '@', then validates the domain.
+function emailCovers(s, j) {
+  const n = s.length;
+  const isWord = (cc) => (cc >= 48 && cc <= 57) || (cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122) || cc >= 128;
+  let k = j;
+  while (k < n) {
+    const c = s.charCodeAt(k);
+    if (c === 95) {
+      // '_' is a local-part char only when intra-word (else it is emphasis)
+      const prev = k > 0 ? s.charCodeAt(k - 1) : 0;
+      const next = k + 1 < n ? s.charCodeAt(k + 1) : 0;
+      if (!(isWord(prev) && isWord(next))) return false;
+      k++;
+      continue;
+    }
+    if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+        c === 46 || c === 33 || c === 35 || c === 36 || c === 37 || c === 38 ||
+        c === 39 || c === 43 || c === 47 || c === 61 || c === 63 || c === 94 ||
+        c === 96 || c === 123 || c === 124 || c === 125 || c === 126 || c === 45) k++;
+    else break;
+  }
+  if (k >= n || s.charCodeAt(k) !== 64) return false;
+  // domain: labels with at least one dot
+  let p = k + 1;
+  while (p < n) {
+    const c = s.charCodeAt(p);
+    if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 45) { p++; continue; }
+    if (c === 46) {
+      const nx = s.charCodeAt(p + 1);
+      if ((nx >= 48 && nx <= 57) || (nx >= 65 && nx <= 90) || (nx >= 97 && nx <= 122) || nx === 45) { p++; continue; }
+      break;
+    }
+    break;
+  }
+  const domain = s.slice(k + 1, p);
+  return p > k + 1 && domain.indexOf('.') >= 0 && domain.indexOf('..') < 0;
+}
+
 function matchEmailAt(s, runStart, at) {
+  // The local part may start before the current text run (across _ or *
+  // emphasis delimiters), so scan back over local-part chars regardless
+  // of runStart; any non-local-part char (space, <, newline, ...) stops it.
+  const isWord = (cc) => (cc >= 48 && cc <= 57) || (cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122) || cc >= 128;
   let start = at;
-  while (start > runStart) {
+  while (start > 0) {
     const c = s.charCodeAt(start - 1);
+    if (c === 95) {
+      // '_' only when intra-word (else it is an emphasis delimiter)
+      const prev = start - 2 >= 0 ? s.charCodeAt(start - 2) : 0;
+      const next = s.charCodeAt(start);
+      if (!(isWord(prev) && isWord(next))) break;
+      start--;
+      continue;
+    }
     if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
         c === 46 || c === 33 || c === 35 || c === 36 || c === 37 || c === 38 ||
         c === 39 || c === 43 || c === 47 || c === 61 || c === 63 || c === 94 ||
@@ -682,7 +796,7 @@ function inlineParse(s, st, mode) {
   while (i < n) {
     const c = s.charCodeAt(i);
     // ---- www. / scheme extended autolink ----
-    if (!inLink && !plain && !st.inA && (c === 119 || c === 104 || c === 72 || c === 102 || c === 70) && isExtStart(s, i)) {
+    if (!inLink && !plain && !st.inA && (c === 119 || c === 104 || c === 72 || c === 102 || c === 70 || c === 109 || c === 77 || c === 120 || c === 88) && isExtStart(s, i)) {
       const ext = matchExtended(s, i, i > 0 ? s[i - 1] : undefined);
       if (ext) {
         const href = cleanUrl(ext.href);
@@ -705,8 +819,15 @@ function inlineParse(s, st, mode) {
       while (!emailed) {
         while (j < n) {
           const d = s.charCodeAt(j);
-          if (d === 92 || d === 96 || d === 91 || d === 33 || d === 60 || d === 42 || d === 95 || d === 126 || d === 10 || d === 64) break;
-          if (!inLink && !plain && !st.inA && (d === 119 || d === 104 || d === 72 || d === 102 || d === 70) && isExtStart(s, j)) break;
+          if (d === 92 || d === 96 || d === 91 || d === 33 || d === 60 || d === 126 || d === 10 || d === 64) break;
+          if (d === 42 || d === 95) {
+            // _ and * are emphasis delimiters -- unless they are part of an
+            // email local part (a.b-c_d@a.b): look ahead for an @ whose
+            // local part reaches back across this delimiter.
+            if (!inLink && !plain && emailCovers(s, j)) { j++; continue; }
+            break;
+          }
+          if (!inLink && !plain && !st.inA && (d === 119 || d === 104 || d === 72 || d === 102 || d === 70 || d === 109 || d === 77 || d === 120 || d === 88) && isExtStart(s, j)) break;
           j++;
         }
         // '@': try an email autolink whose local part ends here
@@ -737,6 +858,8 @@ function inlineParse(s, st, mode) {
           if (!plain) out.push('<br>');
           else out.push('\n');
           i = j + 1;
+          // a hard break strips the next line's leading whitespace
+          while (i < n && (s.charCodeAt(i) === 32 || s.charCodeAt(i) === 9)) i++;
           continue;
         }
         emitText(runStart, j);
@@ -756,6 +879,8 @@ function inlineParse(s, st, mode) {
         if (!plain) out.push('<br>');
         else out.push('\n');
         i += 2;
+        // a hard break strips the next line's leading whitespace
+        while (i < n && (s.charCodeAt(i) === 32 || s.charCodeAt(i) === 9)) i++;
         continue;
       }
       if (nx !== undefined && isAsciiPunctCode(nx)) {
