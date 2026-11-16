@@ -301,7 +301,7 @@ function tryBareEmail(src, i, delims) {
       const d = delims[k];
       if (d.ch === 95 && d.active && d.open && d.len > 0) { hasOpener = true; break; }
     }
-    if (hasOpener) end--;
+    if (hasOpener) { while (end > dstart && src.charCodeAt(end - 1) === 95) end--; }
     else return null;
   }
   const domain = src.slice(dstart, end);
@@ -1809,6 +1809,10 @@ function parseBlocks(lines, refs, collect, tight, taskHtml) {
         const rest = para.slice(k);
         para = [];
         if (rest.length) {
+          // If the paragraph is a table, a setext-looking line is a table
+          // body row, not a heading underline: keep it in the paragraph.
+          const tbl = tryTable(rest, refs, collect);
+          if (tbl && tbl.consumed === rest.length) { para = rest.concat([ln]); i++; continue; }
           const trimmed = trimParaEdges(rest);
           const inline = paragraphInline(trimmed, refs, collect);
           if (!collect && inline) emitBlock('<h' + se + '>' + inline + '</h' + se + '>\n');
