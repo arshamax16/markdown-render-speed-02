@@ -807,8 +807,8 @@ function inlineParse(s, st, mode) {
 
     // ---- '!' (possible image) ----
     if (c === 33) {
-      if (s.charCodeAt(i + 1) === 91 && !plain) {
-        const img = tryLinkOrImage(s, i + 1, st, true);
+      if (s.charCodeAt(i + 1) === 91) {
+        const img = tryLinkOrImage(s, i + 1, st, true, plain);
         if (img) {
           out.push(img.html);
           i = img.end;
@@ -822,13 +822,11 @@ function inlineParse(s, st, mode) {
 
     // ---- '[' (possible link) ----
     if (c === 91) {
-      if (!plain) {
-        const lnk = tryLinkOrImage(s, i, st, false);
-        if (lnk) {
-          out.push(lnk.html);
-          i = lnk.end;
-          continue;
-        }
+      const lnk = tryLinkOrImage(s, i, st, false, plain);
+      if (lnk) {
+        out.push(lnk.html);
+        i = lnk.end;
+        continue;
       }
       out.push('[');
       i++;
@@ -1007,7 +1005,7 @@ function labelHasBadBacktick(s) {
   return false;
 }
 
-function tryLinkOrImage(s, lb, st, isImage) {
+function tryLinkOrImage(s, lb, st, isImage, plain) {
   const close = findMatchingBracket(s, lb);
   if (close < 0) return null;
   const label = s.slice(lb + 1, close);
@@ -1019,10 +1017,18 @@ function tryLinkOrImage(s, lb, st, isImage) {
   let end = -1;
   if (s.charCodeAt(after) === 40) { // ( inline
     const d = parseInlineDest(s, after);
-    if (!d) return null; // a '(' claims the link: no fallback to shortcut
-    href = d.dest;
-    title = d.title;
-    end = d.end;
+    if (!d) {
+      // Invalid inline destination: fall back to the shortcut reference.
+      const ref = st.refs.get(normalizeLabel(label));
+      if (!ref || normalizeLabel(label) === '') return null;
+      href = ref.href;
+      title = ref.title;
+      end = after;
+    } else {
+      href = d.dest;
+      title = d.title;
+      end = d.end;
+    }
   } else if (s.charCodeAt(after) === 91) { // [ full / collapsed
     const refClose = findMatchingBracket(s, after);
     if (refClose >= 0) {
@@ -1037,14 +1043,7 @@ function tryLinkOrImage(s, lb, st, isImage) {
         }
       }
     }
-    if (end < 0) {
-      // fall back to shortcut
-      const ref = st.refs.get(normalizeLabel(label));
-      if (!ref) return null;
-      href = ref.href;
-      title = ref.title;
-      end = after;
-    }
+    if (end < 0) return null; // a [ claims the link: no shortcut fallback
   } else { // shortcut
     const ref = st.refs.get(normalizeLabel(label));
     if (!ref) return null;
@@ -1055,6 +1054,11 @@ function tryLinkOrImage(s, lb, st, isImage) {
   const clean = cleanUrl(href);
   if (clean === null) return null;
   if (isImage) {
+    if (plain) {
+      const altPlain = inlineParse(label, st, MODE_PLAIN);
+      if (st.links > 0) { /* veto tracking is done by the caller */ }
+      return { html: altPlain, end };
+    }
     const alt = inlineParse(label, st, MODE_PLAIN);
     let html = '<img src="' + escapeAttr(clean) + '" alt="' + alt + '"';
     if (title !== null && title !== undefined) html += ' title="' + escapeAttr(title) + '"';
@@ -1064,6 +1068,17 @@ function tryLinkOrImage(s, lb, st, isImage) {
   // link: parse the label, veto when it contains a bracket-link
   const inABefore = st.inA;
   const linksBefore = st.links;
+  if (plain) {
+    // plain mode (image alt): the link contributes only its label's plain
+    // text; a vetoed label is still vetoed (caller re-parses it).
+    const labelPlain = inlineParse(label, st, MODE_PLAIN);
+    if (st.links > linksBefore) {
+      st.inA = inABefore;
+      return null;
+    }
+    st.links++; // a formed link still counts for the outer veto
+    return { html: labelPlain, end };
+  }
   const labelHtml = inlineParse(label, st, MODE_LINK);
   if (st.links > linksBefore) {
     st.inA = inABefore; // the vetoed label will be re-parsed by the caller
@@ -1426,6 +1441,7 @@ function parseDef(lines, i, b, st) {
   if (close < 0) return 0;
   const label = t.slice(p + 1, close);
   if (!label || label.length > 999) return 0;
+  if (normalizeLabel(label) === '') return 0; // a whitespace-only label
   // A link label cannot contain an unescaped [ or ] (so [ref[bar]] and
   // [[[foo]]] are not valid definitions).
   for (let q = 0; q < label.length; q++) {
@@ -1649,6 +1665,16 @@ function parseHtmlBlock(lines, i, b, info, st, isTop) {
 
 // --- blockquote ---
 
+// The first physical line of `line` starts a blockquote or list (a
+// container that might end in an open paragraph, so a lazy line after it
+// is carried inside by merging).
+function startsContainer(line) {
+  const first = line.split('\n', 1)[0];
+  const ind = indentOf(first);
+  if (matchBQ(first, ind) !== null) return true;
+  return parseMarker(first, ind) !== null;
+}
+
 function parseBlockquote(lines, i, b, st, isTop) {
   const inner = [];
   let j = i;
@@ -1684,13 +1710,20 @@ function parseBlockquote(lines, i, b, st, isTop) {
     // lazy line it is indented by 4 (so it is not a setext underline).
     const li0 = indentOf(line);
     const lazySetext = isSetextLine(line, li0) && !isHrLine(line, li0);
-    if (inPara && !fence && (isParaLine(line, true, false, true) || lazySetext)) {
+    const lastIsContainer = inner.length > 0 && startsContainer(inner[inner.length - 1]);
+    if ((inPara || lastIsContainer) && !fence && (isParaLine(line, true, false, true) || lazySetext)) {
       // lazy line: dedent by 4 columns when indented that far, remainder
-      // verbatim (a tab survives as a tab).
+      // verbatim (a tab survives as a tab). Merge it into the preceding
+      // inner line so it stays part of the open paragraph (a lazy line
+      // cannot start a new block) and is carried into nested blockquotes.
       const li = indentOf(line);
       let lazy = li.cols >= 4 ? dedentLine(line, 4) : line;
       if (lazySetext && prevLazy) lazy = '    ' + lazy;
-      inner.push(lazy);
+      if (inner.length && inner[inner.length - 1].length > 0 && !isBlankLine(inner[inner.length - 1])) {
+        inner[inner.length - 1] += '\n' + lazy;
+      } else {
+        inner.push(lazy);
+      }
       inPara = true;
       prevLazy = true;
       j++;
@@ -1805,7 +1838,11 @@ function parseList(lines, i, b, st, isTop) {
     if (pending.length === 0 && inPara && (isParaLine(line, true, true, true) || lazySetext)) {
       let lazy = dedentExpand(line, 0, cur.contentIndent);
       if (indentOf(lazy).cols >= 4) lazy = lazy.slice(4);
-      cur.lines.push(lazy);
+      if (cur.lines.length && cur.lines[cur.lines.length - 1].length > 0 && !isBlankLine(cur.lines[cur.lines.length - 1])) {
+        cur.lines[cur.lines.length - 1] += '\n' + lazy;
+      } else {
+        cur.lines.push(lazy);
+      }
       inPara = true;
       j++;
       continue;
