@@ -880,6 +880,10 @@ function parseInline(s, refs) {
   let text = "";
   const n = s.length;
   let i = 0;
+  // set when a backtick run fails to form a code span; a later code
+  // span that would swallow a link-closing ] is then blocked, so the
+  // link forms (the unmatched run "poisons" the next backtick)
+  let sawUnmatchedTick = false;
   const flush = () => {
     if (text.length > 0) { nodes.push({ t: 0, s: text }); text = ""; }
   };
@@ -919,10 +923,28 @@ function parseInline(s, refs) {
       else if (d !== -1 && isAsciiPunctCode(d)) { text += s[i + 1]; i += 2; }
       else { text += "\\"; i += 1; }
     } else if (c === 96) {
-      // backtick run: code span; an unmatched run is literal text
-      const cs = scanCodeSpan(s, i);
+      // backtick run: code span; an unmatched run is literal text.
+      // If an earlier run in this string was unmatched AND we are
+      // inside a link text (an unmatched [ sits in the nodes), a
+      // code span whose content holds a link-closing ] (followed
+      // by ( or [) does not form, so the link it would swallow
+      // stays a link.
+      let cs = scanCodeSpan(s, i);
+      if (cs && sawUnmatchedTick) {
+        let inLinkText = false;
+        for (let q = nodes.length - 1; q >= 0; q--) {
+          if (nodes[q].t === 5) { inLinkText = true; break; }
+        }
+        if (inLinkText) {
+          const cc = cs.content;
+          for (let q = 0; q + 1 < cc.length; q++) {
+            if (cc.charCodeAt(q) === 93 && (cc.charCodeAt(q + 1) === 40 || cc.charCodeAt(q + 1) === 91)) { cs = null; break; }
+          }
+        }
+      }
       if (cs) { flush(); nodes.push({ t: 2, s: cs.content }); i = cs.end; }
       else {
+        sawUnmatchedTick = true;
         let j = i;
         while (j < n && s.charCodeAt(j) === 96) j++;
         text += s.slice(i, j);
@@ -1001,11 +1023,13 @@ function parseInline(s, refs) {
     } else if (c === 33 && i + 1 < n && s.charCodeAt(i + 1) === 91) {
       // ![
       flush();
+      sawUnmatchedTick = false;
       nodes.push({ t: 5, img: true, start: i + 2 });
       i += 2;
     } else if (c === 91) {
       // [
       flush();
+      sawUnmatchedTick = false;
       nodes.push({ t: 5, img: false, start: i + 1 });
       i += 1;
     } else if (c === 93) {
@@ -2248,9 +2272,9 @@ function parseBlocks(lines, lastNL, refs) {
         const adv = advanceCols(rawLine, 0, leaf.fenceIndent);
         let text = rawLine.slice(adv.idx);
         if (adv.partial > 0) {
-          const col = colAt(rawLine, adv.idx);
-          const r = expandPartialTab(rawLine, adv.idx, col, adv.partial);
-          text = r.line.slice(r.idx);
+          // a tab partially consumed by the fence dedent is
+          // removed entirely, not converted to spaces
+          text = rawLine.slice(adv.idx + 1);
         }
         codeAppend(leaf, text, ln);
       } else if (leaf && leaf.t === "code" && leaf.indented) {
@@ -2332,9 +2356,9 @@ function parseBlocks(lines, lastNL, refs) {
           const adv = advanceCols(line, idx, leaf.fenceIndent);
           let text = line.slice(adv.idx);
           if (adv.partial > 0) {
-            const col = colAt(line, adv.idx);
-            const r = expandPartialTab(line, adv.idx, col, adv.partial);
-            text = r.line.slice(r.idx);
+            // a tab partially consumed by the fence dedent is
+            // removed entirely, not converted to spaces
+            text = line.slice(adv.idx + 1);
           }
           codeAppend(leaf, text, ln);
         } else if (leaf && leaf.t === "code" && leaf.indented) {
@@ -2404,9 +2428,9 @@ function parseBlocks(lines, lastNL, refs) {
           const adv = advanceCols(line, failIdx, leaf.fenceIndent);
           let text = line.slice(adv.idx);
           if (adv.partial > 0) {
-            const col = colAt(line, adv.idx);
-            const r = expandPartialTab(line, adv.idx, col, adv.partial);
-            text = r.line.slice(r.idx);
+            // a tab partially consumed by the fence dedent is
+            // removed entirely, not converted to spaces
+            text = line.slice(adv.idx + 1);
           }
           codeAppend(leaf, text, ln);
           ln++;
@@ -2481,9 +2505,9 @@ function parseBlocks(lines, lastNL, refs) {
         const adv = advanceCols(line, idx, leaf.fenceIndent);
         let text = line.slice(adv.idx);
         if (adv.partial > 0) {
-          const col = colAt(line, adv.idx);
-          const r = expandPartialTab(line, adv.idx, col, adv.partial);
-          text = r.line.slice(r.idx);
+          // a tab partially consumed by the fence dedent is
+          // removed entirely, not converted to spaces
+          text = line.slice(adv.idx + 1);
         } else if (idx > 0) {
           // inside a container, tabs in the leading whitespace
           // expand to spaces from their absolute column; each
