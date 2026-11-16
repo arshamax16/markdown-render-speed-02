@@ -88,12 +88,13 @@ function entityEnd(s, i) {
 const URL_OK = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789;,/?:@&=+$_.!~*'()#%-";
 function _setOf(str) { const t = new Uint8Array(128); for (let i = 0; i < str.length; i++) t[str.charCodeAt(i)] = 1; return t; }
 const URL_OK_SET = _setOf(URL_OK);
+function _isHex(c) { return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102); }
 function encodeUrl(raw) {
   let out = '';
   for (let i = 0; i < raw.length; i++) {
     const c = raw.charCodeAt(i);
     if (c < 128 && URL_OK_SET[c]) { out += raw[i]; continue; }
-    if (c === 37 && i + 2 < raw.length && /^[0-9a-fA-F]{2}$/.test(raw.slice(i + 1, i + 3))) { out += raw.slice(i, i + 3); i += 2; continue; }
+    if (c === 37 && i + 2 < raw.length && _isHex(raw.charCodeAt(i + 1)) && _isHex(raw.charCodeAt(i + 2))) { out += raw.slice(i, i + 3); i += 2; continue; }
     if (c < 128) { out += '%' + c.toString(16).toUpperCase().padStart(2, '0'); continue; }
     // non-ASCII: UTF-8 percent-encoding
     let cp = raw.codePointAt(i);
