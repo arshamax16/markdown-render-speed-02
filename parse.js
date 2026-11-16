@@ -863,7 +863,7 @@ function parseInline(s, refs) {
       const a = tryAngle(s, i);
       if (a) {
         flush();
-        if (a.kind === "auto") nodes.push({ t: 7, href: a.href, text: a.text });
+        if (a.kind === "auto") nodes.push({ t: 7, href: a.href, text: a.text, angle: true });
         else nodes.push({ t: 1, s: s.slice(i, a.end) });
         i = a.end;
       } else { text += "<"; i += 1; }
@@ -1084,11 +1084,12 @@ function resolveBracket(nodes, refs, s, i) {
 }
 
 // Convert autolink nodes to plain text nodes (used when a link/image forms:
-// an autolink inside link text renders as text, not as a nested link).
+// an EXTENDED autolink inside link text renders as text, not as a nested
+// link; an angle-bracket autolink keeps its nested link).
 function stripAutolinks(nodes) {
   let changed = false;
   const out = nodes.map((node) => {
-    if (node.t === 7) { changed = true; return { t: 0, s: node.text }; }
+    if (node.t === 7 && !node.angle) { changed = true; return { t: 0, s: node.text }; }
     if ((node.t === 6 || node.t === 8) && node.ch) {
       const inner = stripAutolinks(node.ch);
       if (inner !== node.ch) { changed = true; return { ...node, ch: inner }; }
@@ -1372,7 +1373,8 @@ function splitTableRow(line) {
   let cur = "";
   let i = 0;
   const n = line.length;
-  // leading pipe
+  // leading pipe (after any leading whitespace) creates no cell
+  while (i < n && (line.charCodeAt(i) === 32 || line.charCodeAt(i) === 9)) i++;
   if (i < n && line.charCodeAt(i) === 124) i++;
   while (i < n) {
     const c = line.charCodeAt(i);
@@ -1391,8 +1393,11 @@ function splitTableRow(line) {
       i++;
     }
   }
-  // trailing pipe: the last cell after it is empty and dropped
-  if (line.length > 0 && line.charCodeAt(line.length - 1) === 124) {
+  // trailing pipe (before any trailing whitespace): the last cell after
+  // it is empty and dropped
+  let j = n - 1;
+  while (j >= 0 && (line.charCodeAt(j) === 32 || line.charCodeAt(j) === 9)) j--;
+  if (j >= 0 && line.charCodeAt(j) === 124) {
     // the last cell was already pushed at the final pipe; nothing extra
   } else {
     cells.push(cur.trim());
@@ -1774,6 +1779,13 @@ function matchContainers(stack, line) {
           idx = r.idx;
         } else {
           idx = adv.idx;
+          // a tab that starts the content (right after the consumed
+          // indent) expands to spaces from its absolute column
+          if (idx < line.length && line.charCodeAt(idx) === 9) {
+            const col = colAt(line, idx);
+            const r = expandPartialTab(line, idx, col, 0);
+            line = r.line;
+          }
         }
       } else {
         // sibling check (an HR beats a sibling list item)
@@ -2256,6 +2268,30 @@ function parseBlocks(lines, lastNL, refs) {
         ln++;
         continue;
       }
+      // a fenced code block inside a LIST ITEM keeps its content lines
+      // even when the containers fail: a non-blank line that does not
+      // start a new block is appended as content (dedented by the fence
+      // indent from the failure cursor). A line that starts a block
+      // (heading, fence, hr, html, quote, any list marker) closes the
+      // code block instead. (Inside a blockquote the fence ends on
+      // container failure, so this applies only when the innermost
+      // container is an item.)
+      if (leaf && leaf.t === "code" && !leaf.indented && stack[stack.length - 1].t === "item") {
+        const ik = interruptKind(line, failIdx, true);
+        const lm = parseListMarker(line, failIdx);
+        if (!ik && !lm) {
+          const adv = advanceCols(line, failIdx, leaf.fenceIndent);
+          let text = line.slice(adv.idx);
+          if (adv.partial > 0) {
+            const col = colAt(line, adv.idx);
+            const r = expandPartialTab(line, adv.idx, col, adv.partial);
+            text = r.line.slice(r.idx);
+          }
+          codeAppend(leaf, text, ln);
+          ln++;
+          continue;
+        }
+      }
       // lazy continuation?
       if (leaf && leaf.t === "para") {
         const ik = interruptKind(line, failIdx, true);
@@ -2431,8 +2467,16 @@ function parseBlocks(lines, lastNL, refs) {
             continue;
           }
         }
-        // interrupting block?
-        if (interruptKind(line, idx, true)) {
+        // interrupting block? Inside a list item, any list marker
+        // starts a nested list (closing the paragraph), even an
+        // ordered marker whose start is not 1; elsewhere the usual
+        // interruption rules apply (ordered must start with 1).
+        let ik = interruptKind(line, idx, true);
+        if (!ik && stack[stack.length - 1].t === "item") {
+          const lm = parseListMarker(line, idx);
+          if (lm && !isHR(line, idx)) ik = "list";
+        }
+        if (ik) {
           closeLeaf();
           // fall through to the new-block dispatch below
         } else {
