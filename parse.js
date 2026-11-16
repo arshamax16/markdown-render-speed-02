@@ -216,9 +216,10 @@ function cleanHref(href) {
 }
 
 // Normalise a link label: collapse whitespace runs to one space, trim,
-// lowercase.
+// lowercase, with Unicode case folding for sharp s and final sigma.
 function normalizeLabel(label) {
-  return label.replace(/\s+/g, " ").trim().toLowerCase();
+  return label.replace(/\s+/g, " ").trim().toLowerCase()
+    .replace(/\u00df/g, "ss").replace(/\u03c2/g, "\u03c3");
 }
 
 // ---------------------------------------------------------------------------
@@ -552,15 +553,15 @@ function parseRefLabel(s, i) {
   while (j < n) {
     const c = s.charCodeAt(j);
     if (c === 92 && j + 1 < n && isAsciiPunctCode(s.charCodeAt(j + 1))) {
-      label += s[j + 1];
+      // backslash escape: keep both chars for label matching
+      label += s[j] + s[j + 1];
       j += 2;
     } else if (c === 93) {
       if (label.length === 0 || label.length > 999) return null;
       return { end: j + 1, label };
     } else if (c === 91) {
-      // unescaped '[' inside a label: allowed by marked's first-']' scan
-      label += "[";
-      j++;
+      // unescaped '[' inside a label makes it invalid
+      return null;
     } else {
       label += s[j];
       j++;
@@ -716,7 +717,11 @@ function renderInline(nodes) {
       case 6:
         if (node.img) {
           out += '<img src="' + escapeAttr(node.href) + '" alt="' +
-            escapeAttr(plainText(node.ch)) + '">';
+            escapeAttr(plainText(node.ch)) + '"';
+          if (node.title !== null && node.title !== "") {
+            out += ' title="' + escapeAttr(node.title) + '"';
+          }
+          out += ">";
         } else {
           out += '<a href="' + escapeAttr(node.href) + '"';
           if (node.title !== null && node.title !== "") {
@@ -761,9 +766,15 @@ function processEmphasis(nodes) {
       for (let oi = di - 1; oi >= 0; oi--) {
         const opener = delims[oi];
         if (opener.node.n === 0 || !opener.node.o || opener.node.ch !== closer.node.ch) continue;
-        // odd-match rule: skip the opener if it can close or the closer
-        // can open and the sum of the runs is a multiple of 3
-        if ((opener.node.c || closer.node.o) && ((opener.node.n + closer.node.n) % 3 === 0)) continue;
+        if (opener.node.c || closer.node.o) {
+          // an opener longer than the closer can never be fully consumed
+          // by it, so it cannot match this closer
+          if (opener.node.n > closer.node.n) continue;
+          // odd-match rule: skip when the run lengths are 1 and 2 (in
+          // either order) modulo 3; runs both divisible by 3 do match
+          const om = opener.node.n % 3, cm = closer.node.n % 3;
+          if ((om === 1 && cm === 2) || (om === 2 && cm === 1)) continue;
+        }
         found = oi;
         break;
       }
@@ -888,12 +899,12 @@ function parseInline(s, refs) {
     } else if (c === 33 && i + 1 < n && s.charCodeAt(i + 1) === 91) {
       // ![
       flush();
-      nodes.push({ t: 5, img: true });
+      nodes.push({ t: 5, img: true, start: i + 2 });
       i += 2;
     } else if (c === 91) {
       // [
       flush();
-      nodes.push({ t: 5, img: false });
+      nodes.push({ t: 5, img: false, start: i + 1 });
       i += 1;
     } else if (c === 93) {
       // ] : try to form a link / image
@@ -955,11 +966,11 @@ function parseInline(s, refs) {
 
 // Handle a ']' at position i in s. Returns the index to continue scanning from.
 function resolveBracket(nodes, refs, s, i) {
-  // find the nearest active bracket
+  // find the nearest active bracket (link nodes are siblings, not
+  // blockers: a link inside the bracket's text is handled below)
   let k = -1;
   for (let j = nodes.length - 1; j >= 0; j--) {
     const node = nodes[j];
-    if (node.t === 6 && !node.img) return i + 1; // a link blocks the search
     if (node.t === 5) { k = j; break; }
   }
   if (k === -1) {
@@ -969,7 +980,8 @@ function resolveBracket(nodes, refs, s, i) {
   }
   const bracket = nodes[k];
   const children = nodes.slice(k + 1);
-  if (containsLink(children)) {
+  // a link's text may not contain a link; an image's description may
+  if (!bracket.img && containsLink(children)) {
     // the link text contains a link: deactivate the bracket
     nodes[k] = { t: 9, s: bracket.img ? "![" : "[" };
     nodes.push({ t: 9, s: "]" });
@@ -981,29 +993,35 @@ function resolveBracket(nodes, refs, s, i) {
   let end = -1;
   const after = i + 1 < n ? s.charCodeAt(i + 1) : -1;
   if (after === 40) {
-    // inline link
+    // inline link: if it fails, there is no shortcut fallback
     const link = parseInlineLink(s, i + 1);
     if (link) { href = link.href; title = link.title; end = link.end; }
   } else if (after === 91) {
-    // full or collapsed reference
+    // full or collapsed reference: if it fails, no shortcut fallback
     if (i + 2 < n && s.charCodeAt(i + 2) === 93) {
-      // collapsed: label is the link text
-      const label = normalizeLabel(plainText(children));
-      const ref = refs.get(label);
-      if (ref) { href = ref.href; title = ref.title; end = i + 3; }
+      // collapsed: label is the raw link text
+      const label = normalizeLabel(s.slice(bracket.start, i));
+      if (label !== "") {
+        const ref = refs.get(label);
+        if (ref) { href = ref.href; title = ref.title; end = i + 3; }
+      }
     } else {
       const rl = parseRefLabel(s, i + 1);
       if (rl) {
-        const ref = refs.get(normalizeLabel(rl.label));
-        if (ref) { href = ref.href; title = ref.title; end = rl.end; }
+        const normLabel = normalizeLabel(rl.label);
+        if (normLabel !== "") {
+          const ref = refs.get(normLabel);
+          if (ref) { href = ref.href; title = ref.title; end = rl.end; }
+        }
       }
     }
-  }
-  if (href === null) {
-    // shortcut reference
-    const label = normalizeLabel(plainText(children));
-    const ref = refs.get(label);
-    if (ref) { href = ref.href; title = ref.title; end = i + 1; }
+  } else {
+    // shortcut reference: label is the raw link text
+    const label = normalizeLabel(s.slice(bracket.start, i));
+    if (label !== "") {
+      const ref = refs.get(label);
+      if (ref) { href = ref.href; title = ref.title; end = i + 1; }
+    }
   }
   if (href === null) {
     // not a link: deactivate the bracket
@@ -1450,6 +1468,7 @@ function parseRefDef(firstLine, idx, lines, ln) {
   }
   const rl = parseRefLabel(window, p);
   if (!rl) return null;
+  if (normalizeLabel(rl.label) === "") return null;
   let q = rl.end;
   if (q >= window.length || window.charCodeAt(q) !== 58) return null;
   q++;
