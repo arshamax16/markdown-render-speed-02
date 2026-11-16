@@ -1897,18 +1897,28 @@ function handleBlock(lines, i, bs, refs, collect, tight) {
       let j = i;
       let lastKind = 'none';
       let lastLazy = false;
+      // A fenced code block cannot have lazy lines: while one is open,
+      // a line without a '>' prefix ends the quote.
+      let fence = null;
       while (j < lines.length) {
         const ln = lines[j];
         const m = bqMatch(ln);
         if (m) {
           sub.push(m);
+          // Track fence open/close on the stripped line.
+          const f = parseFence(m);
+          if (fence) {
+            if (f && f.chCode === fence.chCode && f.len >= fence.len) fence = null;
+          } else if (f) {
+            fence = { chCode: f.chCode, len: f.len };
+          }
           lastKind = classifyAdded(m, lastKind);
           lastLazy = false;
           j++;
           continue;
         }
         if (blankLine(ln)) break;
-        if ((!blockStart(ln, true) || setextLevel(ln) === 1) && !listMatch(ln)) {
+        if (!fence && ((!blockStart(ln, true) || setextLevel(ln) === 1) && !listMatch(ln))) {
           if (lastKind === 'para') {
             const ind = lineIndent(ln);
             let content = ln;
