@@ -90,9 +90,13 @@ function escapeHtmlFull(s) {
 const PUNCT = new Set('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'.split(''));
 
 // Link-label normalisation: collapse whitespace runs to one space, trim,
-// Unicode case-fold (toLowerCase is close enough for the labels in play).
+// Unicode case-fold. toLowerCase alone is not full case folding: ß/ẞ fold
+// to "ss" (so [ẞ] matches [SS]), as do the Latin ligatures.
 function normalizeLabel(s) {
-  return s.replace(/\s+/g, ' ').trim().toLowerCase();
+  return s.replace(/\s+/g, ' ').trim().toLowerCase()
+    .replace(/ß/g, 'ss')
+    .replace(/[ﬀﬁﬂﬃﬄ]/g, (m) => ({ 'ﬀ': 'ff', 'ﬁ': 'fi', 'ﬂ': 'fl', 'ﬃ': 'ffi', 'ﬄ': 'ffl' })[m])
+    .replace(/[ﬅﬆ]/g, 'st');
 }
 
 // marked's cleanUrl: encodeURI, %25 -> %, null on throw.
@@ -217,8 +221,38 @@ function findMatchingBracket(s, start) {
   const n = s.length;
   let depth = 1;
   let i = start + 1;
+  let quote = 0; // 34 = ", 39 = ' : a ] inside a quoted string does not
+  // close the label (a quote between two word chars is an apostrophe and
+  // does not open a quoted string).
+  const isWord = (cc) => (cc >= 48 && cc <= 57) || (cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122) || cc >= 128;
   while (i < n) {
     const c = s.charCodeAt(i);
+    if (quote) {
+      if (c === 93) return -1; // a ] inside a quoted string vetoes the link
+      if (c === quote) quote = 0;
+      i++;
+      continue;
+    }
+    if (c === 34 || c === 39) {
+      const prev = i > 0 ? s.charCodeAt(i - 1) : 0;
+      const next = i + 1 < n ? s.charCodeAt(i + 1) : 0;
+      if (!(isWord(prev) && isWord(next))) quote = c;
+      i++;
+      continue;
+    }
+    if (c === 60) { // '<': skip a <...> autolink (its ] does not close)
+      let j = i + 1;
+      while (j < n && s.charCodeAt(j) !== 62 && s.charCodeAt(j) !== 10) j++;
+      if (j < n) {
+        const inner = s.slice(i + 1, j);
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^<>\s]*$/.test(inner) || /^[^<>\s@]+@[^<>\s]+\.[^<>\s]+$/.test(inner)) {
+          i = j + 1;
+          continue;
+        }
+      }
+      i++;
+      continue;
+    }
     if (c === 92) { // backslash
       const nx = s.charCodeAt(i + 1);
       if (nx !== undefined && isAsciiPunctCode(nx)) i += 2;
@@ -291,7 +325,8 @@ function parseInlineDest(s, pos) {
       if (isSpaceCode(c) || c < 32) break;
       p++;
     }
-    if (p === start) return null; // empty bare destination is not allowed here
+    // An empty bare destination is allowed: [link]() is a link with an
+    // empty href (the ')' below, or a title, terminates it).
     dest = s.slice(start, p);
     if (!ok && p >= n) return null;
     if (ok) { /* dest ends at this ')' — but that ')' closes the link, not the dest */ }
@@ -878,6 +913,16 @@ function resolveDelims(out, delims, plain) {
   const refresh = (d) => {
     out[d.idx] = d.ct + d.ch.repeat(d.len) + d.ot;
   };
+  // Ranges (by out-index) of already-formed emphasis pairs. An opener
+  // strictly inside such a range cannot pair with a closer outside it
+  // (emphasis does not cross an already-formed emphasis boundary).
+  const matched = [];
+  const insideMatched = (idx) => {
+    for (let k = 0; k < matched.length; k++) {
+      if (idx > matched[k][0] && idx < matched[k][1]) return true;
+    }
+    return false;
+  };
   for (let ci = 0; ci < delims.length; ci++) {
     const closer = delims[ci];
     if (!closer.canClose || closer.len === 0) continue;
@@ -894,6 +939,7 @@ function resolveDelims(out, delims, plain) {
         closer.ct = closer.ct + DEL[1];
         refresh(opener);
         refresh(closer);
+        matched.push([opener.idx, closer.idx]);
         break;
       }
       continue;
@@ -904,6 +950,7 @@ function resolveDelims(out, delims, plain) {
       for (let oi = ci - 1; oi >= 0; oi--) {
         const cand = delims[oi];
         if (cand.ch !== closer.ch || !cand.canOpen || cand.len === 0) continue;
+        if (insideMatched(cand.idx)) continue;
         // rule 9/10 (odd match): if EITHER delimiter can both open and
         // close, the sum of the run lengths must not be a multiple of 3
         // unless both lengths are multiples of 3
@@ -915,6 +962,7 @@ function resolveDelims(out, delims, plain) {
         break;
       }
       if (!opener) break;
+      matched.push([opener.idx, closer.idx]);
       const use = opener.len >= 2 && closer.len >= 2 ? 2 : 1;
       opener.len -= use;
       closer.len -= use;
@@ -1378,6 +1426,16 @@ function parseDef(lines, i, b, st) {
   if (close < 0) return 0;
   const label = t.slice(p + 1, close);
   if (!label || label.length > 999) return 0;
+  // A link label cannot contain an unescaped [ or ] (so [ref[bar]] and
+  // [[[foo]]] are not valid definitions).
+  for (let q = 0; q < label.length; q++) {
+    const lc = label.charCodeAt(q);
+    if (lc === 91 || lc === 93) {
+      let bs = 0;
+      for (let r = q - 1; r >= 0 && label.charCodeAt(r) === 92; r--) bs++;
+      if (bs % 2 === 0) return 0;
+    }
+  }
   p = close + 1;
   if (t.charCodeAt(p) !== 58) return 0;
   p++;
@@ -1407,10 +1465,17 @@ function parseDef(lines, i, b, st) {
     if (r < t.length && t.charCodeAt(r) !== 10 && (t.charCodeAt(r) === 34 || t.charCodeAt(r) === 39 || t.charCodeAt(r) === 40)) {
       const ti = parseDefTitle(t, r);
       if (!ti) return 0;
-      title = ti.title;
-      p = ti.end;
-      while (p < t.length && (t.charCodeAt(p) === 32 || t.charCodeAt(p) === 9)) p++;
-      if (p < t.length && t.charCodeAt(p) !== 10) return 0;
+      let tp = ti.end;
+      while (tp < t.length && (t.charCodeAt(tp) === 32 || t.charCodeAt(tp) === 9)) tp++;
+      if (tp < t.length && t.charCodeAt(tp) !== 10) {
+        // Junk after a next-line title: the definition still stands
+        // (without a title) and the title line is left as a paragraph.
+        title = null;
+        p = q;
+      } else {
+        title = ti.title;
+        p = tp;
+      }
     } else {
       p = q; // no title; the definition ends at the destination's line
     }
@@ -1633,6 +1698,18 @@ function parseBlockquote(lines, i, b, st, isTop) {
     }
     break;
   }
+  // A trailing whitespace-only line (e.g. from `>  `) is paragraph text,
+  // not a blank line: merge it into the preceding line.
+  {
+    const n = inner.length;
+    if (n >= 2) {
+      const last = inner[n - 1];
+      if (last.length > 0 && isBlankLine(last) && inner[n - 2].length > 0 && !isBlankLine(inner[n - 2])) {
+        inner[n - 2] = inner[n - 2] + '\n' + last;
+        inner.pop();
+      }
+    }
+  }
   const sub = renderBlocks(inner, 0, inner.length, st, false, false);
   return { parts: ['<blockquote>\n', sub.parts, '</blockquote>\n'], next: j };
 }
@@ -1656,10 +1733,11 @@ function parseList(lines, i, b, st, isTop) {
   let inPara = false; // the current item's content ends with an open paragraph
   let fence = null; // {char, len} while inside a fenced code block
   const flushItem = () => {
-    if (cur && cur.lines.length) {
-      // strip trailing blank lines from the item
+    if (cur) {
+      // strip trailing blank lines from the item; an item with no lines
+      // at all is still an item (<li></li>).
       while (cur.lines.length && cur.lines[cur.lines.length - 1] === '') cur.lines.pop();
-      if (cur.lines.length) items.push(cur);
+      items.push(cur);
     }
     cur = null;
   };
@@ -1687,6 +1765,9 @@ function parseList(lines, i, b, st, isTop) {
       continue;
     }
     if (!cur) break; // no item yet and not a marker: shouldn't happen
+    // An empty item (no content yet) followed by a blank line is closed;
+    // a later indented line is a new top-level block, not its content.
+    if (cur.lines.every((l) => l === '') && pending.length > 0 && ind.cols >= cur.contentIndent) break;
     // indented content line? (leading tabs expanded to spaces)
     if (ind.cols >= cur.contentIndent) {
       const dedented = dedentExpand(line, 0, cur.contentIndent);
