@@ -1288,24 +1288,6 @@ function splitTableRow(text) {
   let cur = '', i = 0, n = text.length;
   while (i < n) {
     const c = text.charCodeAt(i);
-    if (c === 96) {
-      let j = i;
-      while (j < n && text.charCodeAt(j) === 96) j++;
-      const run = j - i;
-      let close = -1, k = j;
-      while (k < n) {
-        if (text.charCodeAt(k) === 96) {
-          let m = k;
-          while (m < n && text.charCodeAt(m) === 96) m++;
-          if (m - k === run) { close = k; break; }
-          k = m;
-        } else k++;
-      }
-      if (close < 0) { cur += text.slice(i, j); i = j; }
-      // A '\|' inside a code span is still a table escape and becomes '|'.
-      else { cur += text.slice(i, close + run).replaceAll('\\|', '|'); i = close + run; }
-      continue;
-    }
     if (c === 92 && i + 1 < n && text.charCodeAt(i + 1) === 124) { cur += '|'; i += 2; continue; }
     if (c === 124) { cells.push(cur); cur = ''; i++; continue; }
     cur += text[i];
