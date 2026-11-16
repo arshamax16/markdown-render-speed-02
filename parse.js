@@ -425,6 +425,8 @@ function bracketCanLink(src, j, brackets, refs) {
   while (bi >= 0 && !brackets[bi].active) bi--;
   if (bi < 0) return false;
   const br = brackets[bi];
+  // A bracket that already contains a link cannot form a link itself.
+  if (br.hasLink) return false;
   let k = skipWs(src, j + 1);
   if (k < src.length && src.charCodeAt(k) === 40) return true;
   if (k < src.length && src.charCodeAt(k) === 91) {
@@ -1849,7 +1851,10 @@ function handleBlock(lines, i, bs, refs, collect, tight) {
       // the last content line is non-empty (a whitespace-only last line
       // counts as non-empty).
       const parts = [];
-      for (const ln of content) parts.push(stripCols(ln, bs.indent, true).s);
+      // Tilde fences never dedent their content; backtick fences dedent
+      // by the opening fence's indent.
+      const dedent = bs.chCode === 126 ? 0 : bs.indent;
+      for (const ln of content) parts.push(stripCols(ln, dedent, true).s);
       let code = parts.join('\n');
       if (parts.length && parts[parts.length - 1].length > 0) code += '\n';
       const lang = unescapeRaw(bs.info.split(/[\s\t]/)[0] || '');
