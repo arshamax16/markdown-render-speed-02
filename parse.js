@@ -2333,12 +2333,15 @@ function parseBlocks(lines, lastNL, refs) {
       // a fenced code block inside a LIST ITEM keeps its content lines
       // even when the containers fail: a non-blank line that does not
       // start a new block is appended as content (dedented by the fence
-      // indent from the failure cursor). A line that starts a block
-      // (heading, fence, hr, html, quote, any list marker) closes the
-      // code block instead. (Inside a blockquote the fence ends on
-      // container failure, so this applies only when the innermost
-      // container is an item.)
-      if (leaf && leaf.t === "code" && !leaf.indented && stack[stack.length - 1].t === "item") {
+      // indent from the failure cursor) -- but only once the fence
+      // already has content. If the FIRST content line fails the
+      // container, the fence closes empty instead (e.g. a fence at
+      // indent 3 whose first line is at indent 0).
+      // A line that starts a block (heading, fence, hr, html, quote,
+      // any list marker) closes the code block instead. (Inside a
+      // blockquote the fence ends on container failure, so this applies
+      // only when the innermost container is an item.)
+      if (leaf && leaf.t === "code" && !leaf.indented && stack[stack.length - 1].t === "item" && leaf.content.length > 0) {
         const ik = interruptKind(line, failIdx, true);
         const lm = parseListMarker(line, failIdx);
         if (!ik && !lm) {
