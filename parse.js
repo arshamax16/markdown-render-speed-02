@@ -153,7 +153,8 @@ function normLabel(s) {
 }
 
 // Parse a link destination at src[i]. Returns [dest, next] or null.
-function parseDest(src, i) {
+// An empty destination is valid only for inline links (allowEmpty).
+function parseDest(src, i, allowEmpty) {
   const n = src.length;
   if (i >= n) return null;
   if (src.charCodeAt(i) === 60) { // <
@@ -179,7 +180,7 @@ function parseDest(src, i) {
     }
     j++;
   }
-  if (j === i) return null;
+  if (j === i) return allowEmpty ? ['', i] : null;
   return [src.slice(i, j), j];
 }
 
@@ -229,7 +230,7 @@ function skipWs(src, i) {
 // Returns {href, title, next} or null.
 function parseInlineLink(src, i, refs) {
   let j = skipWs(src, i + 1);
-  const d = parseDest(src, j);
+  const d = parseDest(src, j, true);
   if (!d) return null;
   j = d[1];
   let title = null;
@@ -449,6 +450,7 @@ function inlineParse(src, refs) {
   const tickSpans = []; // code spans {start,end} whose content holds a backtick
   const images = []; // {idx, marker, href, title}
   let seenA = false;
+  let linkSeq = 0; // ids for link/image spans, for emphasis boundaries
   let i = 0;
 
   function flush() { if (buf !== '') { out.push(escText(buf)); kind.push(0); buf = ''; } }
@@ -466,11 +468,11 @@ function inlineParse(src, refs) {
     return [left, right, prev, next];
   }
 
-  function addDelim(ch, runLen, open, close) {
+  function addDelim(ch, runLen, open, close, pos) {
     flush();
     out.push(ch.repeat(runLen));
     kind.push(1);
-    delims.push({ ch: ch.charCodeAt(0), len: runLen, idx: out.length - 1, open, close, active: true, lit: ch.repeat(runLen), tags: '' });
+    delims.push({ ch: ch.charCodeAt(0), len: runLen, idx: out.length - 1, open, close, active: true, lit: ch.repeat(runLen), tags: '', pos, link: 0 });
   }
 
   // Find a closing backtick run of exactly k starting the scan at j.
@@ -584,11 +586,15 @@ function inlineParse(src, refs) {
         if (j + 1 < n && src.charCodeAt(j + 1) === 62) return [src.slice(pos, j + 2), j + 2, name, false];
         return null;
       }
+      // Attribute name: [A-Za-z_:][A-Za-z0-9_.:-]*
       const as = j;
+      const ac = src.charCodeAt(j);
+      if (!(isAlpha(ac) || ac === 95 || ac === 58)) return null;
+      j++;
       while (j < n) {
         const d = src.charCodeAt(j);
-        if (d === 32 || d === 9 || d === 10 || d === 61 || d === 47 || d === 62 || d === 34 || d === 39) break;
-        j++;
+        if (isAlnum(d) || d === 95 || d === 46 || d === 58 || d === 45) j++;
+        else break;
       }
       if (j === as) return null;
       while (j < n && (src.charCodeAt(j) === 32 || src.charCodeAt(j) === 9 || src.charCodeAt(j) === 10)) j++;
@@ -621,6 +627,8 @@ function inlineParse(src, refs) {
     while (bi >= 0 && !brackets[bi].active) bi--;
     if (bi < 0) return -1;
     const br = brackets[bi];
+    // A link's text cannot contain another link.
+    if (!br.img && br.hasLink) { br.active = false; return -1; }
     for (let t = 0; t < tickSpans.length; t++) {
       const cs = tickSpans[t];
       if (cs.start > br.srcPos && cs.end < closePos) {
@@ -679,6 +687,20 @@ function inlineParse(src, refs) {
     }
     for (let b = brackets.length - 1; b > bi; b--) brackets[b].active = false;
     br.active = false;
+    // Emphasis cannot cross a link boundary: mark the delimiters inside
+    // this link/image with its id (innermost wins -- only unmarked ones).
+    linkSeq++;
+    for (let d = 0; d < delims.length; d++) {
+      const dm = delims[d];
+      if (!dm.link && dm.pos > br.srcPos && dm.pos < closePos) dm.link = linkSeq;
+    }
+    // A link inside a bracket blocks that bracket from forming a link
+    // (images may contain links, so only links set this).
+    if (!br.img) {
+      for (let b = 0; b < bi; b++) {
+        if (brackets[b].active) brackets[b].hasLink = true;
+      }
+    }
     return next;
   }
 
@@ -725,7 +747,7 @@ function inlineParse(src, refs) {
         open = fl[0] && (!fl[1] || fl[2] >= 0 && isPunct(fl[2]));
         close = fl[1] && (!fl[0] || fl[3] >= 0 && isPunct(fl[3]));
       }
-      addDelim(ch, k - i, open, close);
+      addDelim(ch, k - i, open, close, i);
       i = k;
       continue;
     }
@@ -734,7 +756,7 @@ function inlineParse(src, refs) {
       while (k < n && src.charCodeAt(k) === 126) k++;
       if (k - i >= 2) {
         const fl = flanking(i, k - i);
-        addDelim('~', k - i, fl[0], fl[1]);
+        addDelim('~', k - i, fl[0], fl[1], i);
       } else buf += '~';
       i = k;
       continue;
@@ -743,7 +765,7 @@ function inlineParse(src, refs) {
       flush();
       out.push('[');
       kind.push(3);
-      brackets.push({ idx: out.length - 1, bangIdx: -1, srcPos: i, img: false, active: true });
+      brackets.push({ idx: out.length - 1, bangIdx: -1, srcPos: i, img: false, active: true, hasLink: false });
       i++;
       continue;
     }
@@ -762,7 +784,7 @@ function inlineParse(src, refs) {
         const bangIdx = out.length - 1;
         out.push('[');
         kind.push(3);
-        brackets.push({ idx: out.length - 1, bangIdx, srcPos: i + 1, img: true, active: true });
+        brackets.push({ idx: out.length - 1, bangIdx, srcPos: i + 1, img: true, active: true, hasLink: false });
         i += 2;
         continue;
       }
@@ -898,6 +920,8 @@ function inlineParse(src, refs) {
       for (let oi = ci - 1; oi >= 0; oi--) {
         const op = delims[oi];
         if (!op.active || op.len === 0 || op.ch !== cl.ch || !op.open) continue;
+        // Emphasis cannot cross a link/image boundary.
+        if (op.link !== cl.link) continue;
         if (cl.ch === 42 && cl.len === 1 && op.len >= 2) {
           let later = false;
           for (let k = ci + 1; k < delims.length; k++) {
@@ -953,6 +977,8 @@ function inlineParse(src, refs) {
     if (im.title !== null && im.title !== undefined) tag += ' title="' + escAttrNoEncode(unescapeRaw(im.title)) + '"';
     out[im.idx] = tag + '>';
     out[im.marker] = '';
+    // The link text is the alt text only; it does not render as content.
+    for (let k = im.idx + 1; k < im.marker; k++) out[k] = '';
   }
 
   return out.join('');
