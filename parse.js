@@ -457,10 +457,12 @@ function scanExtendedUrl(s, i) {
     // first char after :// must be a domain char
     if (j >= n || !isDomainCode(s.charCodeAt(j))) return null;
   }
-  // raw run: chars until whitespace or '<'
+  // raw run: chars until whitespace or '<'; stop at a ']' that closes a
+  // link (followed by '(' or '[') so the link can still form
   while (j < n) {
     const c = s.charCodeAt(j);
     if (c === 60 || isSpaceCode(c)) break;
+    if (c === 93 && j + 1 < n && (s.charCodeAt(j + 1) === 40 || s.charCodeAt(j + 1) === 91)) break;
     j++;
   }
   let url = s.slice(i, j);
@@ -474,6 +476,7 @@ function scanExtendedUrl(s, i) {
 //  1. cut at the first '(' that has no ')' after it
 //  2. trim trailing punctuation (?!.,:;*_~'") — a ';' also eats a trailing &name entity
 //  3. trim trailing ')'s: keep at most 1 after the last '(' (0 if no '(')
+// Steps 2 and 3 repeat until stable (trimming ')'s can expose punctuation).
 function trimUrl(url) {
   // 1. first '(' with no ')' after it
   const lastClose = url.lastIndexOf(")");
@@ -484,31 +487,35 @@ function trimUrl(url) {
   if (firstOpen !== -1 && firstOpen > lastClose) {
     url = url.slice(0, firstOpen);
   }
-  // 2. trailing punctuation
   const PUNCT = "?!.,:;*_~'\"";
-  while (url.length > 0) {
-    const last = url.charCodeAt(url.length - 1);
-    if (PUNCT.indexOf(String.fromCharCode(last)) === -1) break;
-    const wasSemi = last === 59;
-    url = url.slice(0, -1);
-    if (wasSemi) {
-      // remove a trailing &name entity (letters/digits only after &)
-      let k = url.length - 1;
-      while (k >= 0 && isAlnumCode(url.charCodeAt(k))) k--;
-      if (k >= 0 && url.charCodeAt(k) === 38 && k < url.length - 1) {
-        url = url.slice(0, k);
+  let prev;
+  do {
+    prev = url;
+    // 2. trailing punctuation
+    while (url.length > 0) {
+      const last = url.charCodeAt(url.length - 1);
+      if (PUNCT.indexOf(String.fromCharCode(last)) === -1) break;
+      const wasSemi = last === 59;
+      url = url.slice(0, -1);
+      if (wasSemi) {
+        // remove a trailing &name entity (letters/digits only after &)
+        let k = url.length - 1;
+        while (k >= 0 && isAlnumCode(url.charCodeAt(k))) k--;
+        if (k >= 0 && url.charCodeAt(k) === 38 && k < url.length - 1) {
+          url = url.slice(0, k);
+        }
       }
     }
-  }
-  // 3. trailing ')'s
-  if (url.length > 0 && url.charCodeAt(url.length - 1) === 41) {
-    const lastOpen = url.lastIndexOf("(");
-    const keep = lastOpen === -1 ? 0 : 1;
-    let t = 0;
-    const after = lastOpen === -1 ? url : url.slice(lastOpen + 1);
-    while (t < after.length && after.charCodeAt(after.length - 1 - t) === 41) t++;
-    if (t > keep) url = url.slice(0, url.length - (t - keep));
-  }
+    // 3. trailing ')'s
+    if (url.length > 0 && url.charCodeAt(url.length - 1) === 41) {
+      const lastOpen = url.lastIndexOf("(");
+      const keep = lastOpen === -1 ? 0 : 1;
+      let t = 0;
+      const after = lastOpen === -1 ? url : url.slice(lastOpen + 1);
+      while (t < after.length && after.charCodeAt(after.length - 1 - t) === 41) t++;
+      if (t > keep) url = url.slice(0, url.length - (t - keep));
+    }
+  } while (url !== prev);
   return url;
 }
 
@@ -1069,10 +1076,26 @@ function resolveBracket(nodes, refs, s, i) {
     nodes.push({ t: 9, s: "]" });
     return i + 1;
   }
-  // form the link / image
+  // form the link / image: autolinks inside the text render as plain text
+  const flat = stripAutolinks(children);
   nodes.length = k;
-  nodes.push({ t: 6, href, title, img: bracket.img, ch: children });
+  nodes.push({ t: 6, href, title, img: bracket.img, ch: flat });
   return end;
+}
+
+// Convert autolink nodes to plain text nodes (used when a link/image forms:
+// an autolink inside link text renders as text, not as a nested link).
+function stripAutolinks(nodes) {
+  let changed = false;
+  const out = nodes.map((node) => {
+    if (node.t === 7) { changed = true; return { t: 0, s: node.text }; }
+    if ((node.t === 6 || node.t === 8) && node.ch) {
+      const inner = stripAutolinks(node.ch);
+      if (inner !== node.ch) { changed = true; return { ...node, ch: inner }; }
+    }
+    return node;
+  });
+  return changed ? out : nodes;
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,6 +1692,27 @@ function expandPartialTab(line, idx, col, consume) {
   const width = next - col;
   const newLine = line.slice(0, idx) + " ".repeat(width) + line.slice(idx + 1);
   return { line: newLine, idx: idx + consume };
+}
+
+// Expand tabs in the leading whitespace run of text to spaces,
+// starting at absolute column col.
+function expandLeadingTabs(text, col) {
+  let i = 0;
+  let out = "";
+  while (i < text.length) {
+    const c = text.charCodeAt(i);
+    if (c === 9) {
+      const next = (col + 4) & ~3;
+      out += " ".repeat(next - col);
+      col = next;
+      i++;
+    } else if (c === 32) {
+      out += " ";
+      col++;
+      i++;
+    } else break;
+  }
+  return out + text.slice(i);
 }
 
 function markerMatchesList(m, list) {
