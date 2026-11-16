@@ -477,7 +477,8 @@ function inlineParse(src, refs) {
   const tickUnmatched = [];
   const tickSpans = []; // code spans {start,end} whose content holds a backtick
   const images = []; // {idx, marker, href, title}
-  let seenA = false;
+  let inA = false; // inside an <a> element: extended autolinks suppressed
+  const autoSpans = []; // extended autolinks, to revert if a link forms around them
   let linkSeq = 0; // ids for link/image spans, for emphasis boundaries
   let spanSeq = 0; // ids for emphasis spans, for nesting boundaries
   let i = 0;
@@ -740,6 +741,17 @@ function inlineParse(src, refs) {
       out.push('</a>');
       kind.push(2);
     }
+    // A link cannot contain another link: revert any extended autolink
+    // formed inside this link/image's text back to plain text.
+    for (let a = 0; a < autoSpans.length; a++) {
+      const au = autoSpans[a];
+      if (au.idx > br.idx && au.idx < out.length - 1) {
+        out[au.idx] = au.text;
+        kind[au.idx] = 0;
+        autoSpans.splice(a, 1);
+        a--;
+      }
+    }
     for (let b = brackets.length - 1; b > bi; b--) brackets[b].active = false;
     br.active = false;
     // Emphasis cannot cross a link boundary: mark the delimiters inside
@@ -886,7 +898,13 @@ function inlineParse(src, refs) {
         const tag = parseHtmlAt(i);
         if (tag) {
           flush();
-          if (!tag[3] && tag[2] === 'a' && tag[0] !== '<a/>') seenA = true;
+          // An <a> tag suppresses extended autolinks only while inside
+          // it, and only if it is not the bare '<a>' or '<a/>'; a
+          // closing '</a>' ends the suppression.
+          if (tag[2] === 'a') {
+            if (tag[3]) inA = false;
+            else if (tag[0] !== '<a>' && tag[0] !== '<a/>') inA = true;
+          }
           out.push(tag[0]);
           kind.push(4);
           i = tag[1];
@@ -920,13 +938,15 @@ function inlineParse(src, refs) {
       continue;
     }
     // Extended autolinks (suppressed after an inline <a>).
-    if (!seenA) {
+    if (!inA) {
       if (c === 119 && src.startsWith('www.', i)) {
         const u = tryUrlAutolink(src, i, brackets, refs);
         if (u) {
           flush();
-          out.push('<a href="' + escAttrNoEncode(encodeUrl(u[0])) + '">' + escText(u[1]) + '</a>');
+          const disp = escText(u[1]);
+          out.push('<a href="' + escAttrNoEncode(encodeUrl(u[0])) + '">' + disp + '</a>');
           kind.push(2);
+          autoSpans.push({ idx: out.length - 1, text: disp });
           i = u[2];
           continue;
         }
@@ -935,8 +955,10 @@ function inlineParse(src, refs) {
         const u = tryUrlAutolink(src, i, brackets, refs);
         if (u) {
           flush();
-          out.push('<a href="' + escAttrNoEncode(encodeUrl(u[0])) + '">' + escText(u[1]) + '</a>');
+          const disp = escText(u[1]);
+          out.push('<a href="' + escAttrNoEncode(encodeUrl(u[0])) + '">' + disp + '</a>');
           kind.push(2);
+          autoSpans.push({ idx: out.length - 1, text: disp });
           i = u[2];
           continue;
         }
@@ -944,16 +966,20 @@ function inlineParse(src, refs) {
         const s = trySchemeAutolink(src, i, delims);
         if (s) {
           flush();
-          out.push('<a href="' + escAttrNoEncode(encodeUrl(s[0])) + '">' + escText(s[0]) + '</a>');
+          const disp = escText(s[0]);
+          out.push('<a href="' + escAttrNoEncode(encodeUrl(s[0])) + '">' + disp + '</a>');
           kind.push(2);
+          autoSpans.push({ idx: out.length - 1, text: disp });
           i = s[1];
           continue;
         }
         const em = tryBareEmail(src, i, delims);
         if (em) {
           flush();
-          out.push('<a href="mailto:' + escAttrNoEncode(encodeUrl(em[0])) + '">' + escText(em[0]) + '</a>');
+          const disp = escText(em[0]);
+          out.push('<a href="mailto:' + escAttrNoEncode(encodeUrl(em[0])) + '">' + disp + '</a>');
           kind.push(2);
+          autoSpans.push({ idx: out.length - 1, text: disp });
           i = em[1];
           continue;
         }
@@ -965,9 +991,9 @@ function inlineParse(src, refs) {
     while (i < n) {
       const d = src.charCodeAt(i);
       if (d === 10 || d === 92 || d === 96 || d === 42 || d === 95 || d === 126 || d === 91 || d === 93 || d === 33 || d === 60 || d === 38) break;
-      if (!seenA && d === 119 && src.startsWith('www.', i)) break;
-      if (!seenA && ((d === 104 || d === 72) && (startsWithCI(src, i, 'http://') || startsWithCI(src, i, 'https://')) || ((d === 102 || d === 70) && startsWithCI(src, i, 'ftp://')))) break;
-      if (!seenA && extBoundary(src, i) && (isAlnum(d) || d === 46 || d === 43 || d === 45 || d === 37)) break;
+      if (!inA && d === 119 && src.startsWith('www.', i)) break;
+      if (!inA && ((d === 104 || d === 72) && (startsWithCI(src, i, 'http://') || startsWithCI(src, i, 'https://')) || ((d === 102 || d === 70) && startsWithCI(src, i, 'ftp://')))) break;
+      if (!inA && extBoundary(src, i) && (isAlnum(d) || d === 46 || d === 43 || d === 45 || d === 37)) break;
       i++;
     }
     buf += src.slice(start, i);
@@ -1583,7 +1609,10 @@ function blockStart(ln, paraOpen) {
   if (isThematicBreak(ln)) return { kind: 'hr' };
   const lm = listMatch(ln);
   if (lm) {
-    if (paraOpen) {
+    // A list marker inside a list item's content starts a nested list
+    // even when a paragraph is open (the top-level interruption rule
+    // does not apply there).
+    if (paraOpen && !ln.nestedList) {
       if (!lm.empty && (!lm.ordered || lm.num === 1)) return { kind: 'list', ...lm };
       return null;
     }
@@ -1960,6 +1989,9 @@ function collectItem(lines, j, lm) {
     if (ind.indent >= lm.contentIndent) {
       if (closed) break;
       const stripped = expandLeadingTab(stripCols(ln, lm.contentIndent, false));
+      // A list marker at the content indent starts a nested list even
+      // when a paragraph is open.
+      if (listMatch(stripped)) stripped.nestedList = true;
       sub.push(stripped);
       lastKind = classifyAdded(stripped, lastKind);
       k++;
