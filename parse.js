@@ -924,22 +924,32 @@ function parseInline(s, refs) {
       else { text += "\\"; i += 1; }
     } else if (c === 96) {
       // backtick run: code span; an unmatched run is literal text.
-      // If an earlier run in this string was unmatched AND we are
-      // inside a link text (an unmatched [ sits in the nodes), a
+      // Inside a link text, a code span of 2+ backticks whose
+      // content holds a complete inline link ]( ... ) does not
+      // form, so the link it would swallow stays a link. (A
+      // single-backtick span holding only a partial ]( ... still
+      // forms, e.g. [not a `link](/foo`), [foo`](/uri)`.)
+      // Also, if an earlier run in this string was unmatched, a
       // code span whose content holds a link-closing ] (followed
-      // by ( or [) does not form, so the link it would swallow
-      // stays a link.
+      // by ( or [) does not form.
       let cs = scanCodeSpan(s, i);
-      if (cs && sawUnmatchedTick) {
+      if (cs) {
         let inLinkText = false;
         for (let q = nodes.length - 1; q >= 0; q--) {
           if (nodes[q].t === 5) { inLinkText = true; break; }
         }
         if (inLinkText) {
+          let run = 0;
+          while (i + run < n && s.charCodeAt(i + run) === 96) run++;
           const cc = cs.content;
+          let blocked = false;
           for (let q = 0; q + 1 < cc.length; q++) {
-            if (cc.charCodeAt(q) === 93 && (cc.charCodeAt(q + 1) === 40 || cc.charCodeAt(q + 1) === 91)) { cs = null; break; }
+            if (run >= 2 && cc.charCodeAt(q) === 93 && cc.charCodeAt(q + 1) === 40) {
+              if (cc.indexOf(")", q + 2) !== -1) { blocked = true; break; }
+            } else if (sawUnmatchedTick && cc.charCodeAt(q) === 93 &&
+                (cc.charCodeAt(q + 1) === 40 || cc.charCodeAt(q + 1) === 91)) { blocked = true; break; }
           }
+          if (blocked) cs = null;
         }
       }
       if (cs) { flush(); nodes.push({ t: 2, s: cs.content }); i = cs.end; }
@@ -2048,7 +2058,13 @@ function parseBlocks(lines, lastNL, refs) {
       closeLeaf();
       // first word of the info string, with backslash escapes unescaped
       const info = (fence.info.trim().split(/\s+/)[0] || "").replace(/\\([!-/:-@\[-`{-~])/g, "$1");
-      const block = { t: "code", info, content: "", fence: fence.fence, fenceLen: fence.len, fenceIndent: fence.indent };
+      // a tilde fence directly inside a blockquote does not dedent
+      // its content by the fence indent (the content keeps its
+      // indent relative to the blockquote marker); a backtick fence
+      // in a blockquote, and any fence inside a list item, dedent
+      // normally
+      const inBq = stack[stack.length - 1].t === "bq";
+      const block = { t: "code", info, content: "", fence: fence.fence, fenceLen: fence.len, fenceIndent: (inBq && fence.fence === 126) ? 0 : fence.indent };
       ch.push(block);
       return block;
     }
