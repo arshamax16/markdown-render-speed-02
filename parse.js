@@ -786,6 +786,35 @@ function processEmphasis(nodes) {
           const om = opener.node.n % 3, cm = closer.node.n % 3;
           if ((om === 1 && cm === 2) || (om === 2 && cm === 1)) continue;
         }
+        // a single-* closer must not steal from a ** opener when a
+        // later ** closer can form a strong with that opener
+        if (opener.node.n === 2 && closer.node.n === 1) {
+          let laterStrong = false;
+          for (let li = di + 1; li < delims.length; li++) {
+            const ld = delims[li];
+            if (ld.node.ch === closer.node.ch && ld.node.c && ld.node.n >= 2) { laterStrong = true; break; }
+          }
+          if (laterStrong) continue;
+        }
+        // a single-* pair enclosing a ** strong does not match when
+        // the strong is preceded by whitespace and immediately
+        // followed by non-whitespace text (e.g. *a **b**c*)
+        if (opener.node.n === 1 && closer.node.n === 1 && opener.node.ch === "*") {
+          let blocked = false;
+          for (let k = opener.idx + 1; k < closer.idx; k++) {
+            const nd = nodes[k];
+            if (nd.t === 8 && nd.tag === "strong") {
+              const prev = k > opener.idx + 1 ? nodes[k - 1] : null;
+              const next = k + 1 < closer.idx ? nodes[k + 1] : null;
+              const prevSpace = prev && prev.t === 0 && prev.s.length > 0 &&
+                (prev.s.charCodeAt(prev.s.length - 1) === 32 || prev.s.charCodeAt(prev.s.length - 1) === 10 || prev.s.charCodeAt(prev.s.length - 1) === 9);
+              const nextText = next && next.t === 0 && next.s.length > 0 &&
+                next.s.charCodeAt(0) !== 32 && next.s.charCodeAt(0) !== 10 && next.s.charCodeAt(0) !== 9;
+              if (prevSpace && nextText) { blocked = true; break; }
+            }
+          }
+          if (blocked) continue;
+        }
         found = oi;
         break;
       }
