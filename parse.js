@@ -456,6 +456,7 @@ function inlineParse(src, refs) {
   function flanking(i0, runLen) {
     const prev = i0 > 0 ? src.charCodeAt(i0 - 1) : -1;
     const next = i0 + runLen < n ? src.charCodeAt(i0 + runLen) : -1;
+    // The start/end of the text count as whitespace for flanking.
     const prevWs = prev < 0 || isUniSpace(prev);
     const nextWs = next < 0 || isUniSpace(next);
     const prevPunct = prev >= 0 && isUniPunct(src, i0 - 1);
@@ -905,7 +906,12 @@ function inlineParse(src, refs) {
           }
           if (later) continue;
         }
-        if (op.open && op.close && cl.open && cl.close && (op.len + cl.len) % 3 === 0) continue;
+        // The odd-match rule: when either side is ambiguous (the opener
+        // can close or the closer can open) and the sum of the lengths
+        // is divisible by 3, the match is skipped -- but only when
+        // neither length is itself divisible by 3 (residues 1 and 2);
+        // runs of 3, 6, ... do match each other.
+        if ((op.close || cl.open) && (op.len + cl.len) % 3 === 0 && op.len % 3 !== 0) continue;
         if (cl.ch === 126 && (op.len < 2 || cl.len < 2)) continue;
         opener = op;
         break;
