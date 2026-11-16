@@ -2148,6 +2148,15 @@ function parseBlocks(lines, lastNL, refs) {
   while (ln < lines.length) {
     const rawLine = lines[ln];
     if (isBlankLine(rawLine)) {
+      // a line of 0-3 spaces + a single tab is NOT blank for a table:
+      // it is a row of empty cells (marked quirk; spaces-only ends it)
+      if (leaf && leaf.t === "table" && /^ {0,3}\t$/.test(rawLine)) {
+        const cells = splitTableRow(rawLine);
+        while (cells.length < leaf.header.length) cells.push("");
+        leaf.rows.push(cells.slice(0, leaf.header.length));
+        ln++;
+        continue;
+      }
       lastBlankLn = ln;
       // blank line: close the paragraph / table
       if (leaf && leaf.t === "para") closeLeaf();
