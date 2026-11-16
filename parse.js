@@ -804,6 +804,10 @@ function inlineParse(s, st, mode) {
   const delims = [];
   const plain = mode === MODE_PLAIN;
   const inLink = mode === MODE_LINK;
+  // A mismatched-backtick link label leaves a dangling backtick state that
+  // suppresses the first following emphasis (when a code span follows it).
+  // It lives only within this inline text.
+  if (!plain && !inLink) st.dangle = false;
   let i = 0;
 
   // Emit a raw text run [a, b): decoded + escaped (plain mode: preserved).
@@ -1031,6 +1035,14 @@ function inlineParse(s, st, mode) {
         canOpen = leftFlank;
         canClose = rightFlank;
       }
+      // Dangling backtick (mismatched-backtick link label): the first
+      // emphasis before the next code span stays literal.
+      if (st.dangle && (c === 42 || c === 95) && hasCodeSpanAfter(s, k)) {
+        out.push(ch.repeat(run));
+        st.dangle = false;
+        i = k;
+        continue;
+      }
       const idx = out.length;
       out.push(ch.repeat(run));
       delims.push({ ch, len: run, idx, canOpen, canClose, ct: '', ot: '' });
@@ -1127,6 +1139,56 @@ function resolveDelims(out, delims, plain) {
 // The label is parsed inline (inLink mode for links, plain mode for images);
 // a link is vetoed when its label contains a bracket-link (marked's
 // nested-link rule), in which case this returns null.
+// Does `label` contain a backtick run pair whose opening and closing runs
+// have DIFFERENT lengths (e.g. ``url`)? Such a label still forms a link,
+// but it leaves a dangling backtick state.
+function labelHasMismatchedBacktick(s) {
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const c = s.charCodeAt(i);
+    if (c === 92 && i + 1 < n && isAsciiPunctCode(s.charCodeAt(i + 1))) { i += 2; continue; }
+    if (c !== 96) { i++; continue; }
+    let k = i;
+    while (k < n && s.charCodeAt(k) === 96) k++;
+    const openLen = k - i;
+    let j = k;
+    while (j < n && s.charCodeAt(j) !== 96) j++;
+    if (j >= n) return false;
+    let e = j;
+    while (e < n && s.charCodeAt(e) === 96) e++;
+    if (e - j !== openLen) return true;
+    i = e;
+  }
+  return false;
+}
+
+// Is there a code span (a backtick run with a same-length closing run)
+// starting at or after `from` in `s`?
+function hasCodeSpanAfter(s, from) {
+  const n = s.length;
+  let i = from;
+  while (i < n) {
+    if (s.charCodeAt(i) !== 96) { i++; continue; }
+    let k = i;
+    while (k < n && s.charCodeAt(k) === 96) k++;
+    const run = k - i;
+    let j = k;
+    let found = false;
+    while (j < n) {
+      if (s.charCodeAt(j) === 96) {
+        let e = j;
+        while (e < n && s.charCodeAt(e) === 96) e++;
+        if (e - j === run) { found = true; break; }
+        j = e;
+      } else j++;
+    }
+    if (found) return true;
+    i = k;
+  }
+  return false;
+}
+
 // A link/image label cannot contain a backtick that is not part of a
 // code span as matched by `+[^`]*`+ (opening run, non-backtick content,
 // closing run; the two runs need NOT have the same length). An unmatched
@@ -1198,6 +1260,7 @@ function tryLinkOrImage(s, lb, st, isImage, plain) {
   }
   const clean = cleanUrl(href);
   if (clean === null) return null;
+  if (labelHasMismatchedBacktick(label)) st.dangle = true;
   if (isImage) {
     if (plain) {
       const altPlain = inlineParse(label, st, MODE_PLAIN);
@@ -2253,7 +2316,7 @@ export function parse(markdown) {
   const lines = src.split('\n');
   const endsNL = src.endsWith('\n');
   const lineCount = endsNL ? lines.length - 1 : lines.length;
-  const st = { refs: new Map(), inA: false, links: 0, lineCount, endsNL };
+  const st = { refs: new Map(), inA: false, links: 0, dangle: false, lineCount, endsNL };
   const top = renderBlocks(lines, 0, lineCount, st, true, false);
   const out = [];
   renderParts(top.parts, st, out);
