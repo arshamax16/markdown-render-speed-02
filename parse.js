@@ -467,6 +467,10 @@ function trySchemeAutolink(src, i, delims) {
 
 // ---- the inline scanner ---------------------------------------------------
 
+// Whether the inline parser is currently inside an <a> element
+// (document-wide; extended autolinks are suppressed while set).
+let inA = false;
+
 function inlineParse(src, refs) {
   const n = src.length;
   const out = [];
@@ -477,7 +481,6 @@ function inlineParse(src, refs) {
   const tickUnmatched = [];
   const tickSpans = []; // code spans {start,end} whose content holds a backtick
   const images = []; // {idx, marker, href, title}
-  let inA = false; // inside an <a> element: extended autolinks suppressed
   const autoSpans = []; // extended autolinks, to revert if a link forms around them
   let linkSeq = 0; // ids for link/image spans, for emphasis boundaries
   let spanSeq = 0; // ids for emphasis spans, for nesting boundaries
@@ -1656,7 +1659,7 @@ function classifyAdded(ln, lastKind) {
   return 'other';
 }
 
-function tryTable(rest, refs) {
+function tryTable(rest, refs, collect) {
   if (rest.length < 2) return null;
   if (lineIndent(rest[1]).indent > 3) return null;
   const headerCells = splitTableRow(lineText(rest[0]));
@@ -1670,6 +1673,9 @@ function tryTable(rest, refs) {
   }
   let bodyEnd = 2;
   while (bodyEnd < rest.length && lineIndent(rest[bodyEnd]).indent <= 3) bodyEnd++;
+  // In collect mode the inline content is not needed (and must not
+  // touch document-wide inline state); only the extent matters.
+  if (collect) return { html: '', consumed: bodyEnd };
   let h = '<table>\n<thead>\n<tr>\n';
   for (let k = 0; k < headerCells.length; k++) {
     const a = aligns[k];
@@ -1741,7 +1747,7 @@ function parseBlocks(lines, refs, collect, tight, taskHtml) {
       return;
     }
     if (!collect) {
-      const tbl = tryTable(rest, refs);
+      const tbl = tryTable(rest, refs, collect);
       if (tbl) {
         task = null;
         emitBlock(tbl.html);
@@ -2066,6 +2072,7 @@ function tryList(lines, i, refs, collect, tight) {
 }
 
 export function parse(markdown) {
+  inA = false; // document-wide: set by an inline <a>, cleared by inline </a>
   const src = String(markdown);
   const raw = src.split('\n');
   if (src.endsWith('\n')) raw.pop();
@@ -2076,6 +2083,8 @@ export function parse(markdown) {
   });
   if (lines.length) lines[lines.length - 1].eol = src.endsWith('\n');
   const refs = new Map();
+  inA = false;
   parseBlocks(lines, refs, true, false, null);
+  inA = false; // the render pass starts fresh, not with collect's state
   return parseBlocks(lines, refs, false, false, null).html;
 }
