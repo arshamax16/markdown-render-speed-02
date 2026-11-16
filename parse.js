@@ -428,7 +428,11 @@ function tryBracketAutolink(s, i) {
 
 // Extended autolink: www. or scheme URL at position i.
 // Returns {end, href, text} or null. i points at the start.
-function scanExtendedUrl(s, i) {
+// stopBracket: only stop the raw run at a ']' that could close a link
+// (followed by '(' or '[') when the nearest '[' opener can still form
+// one -- i.e. its text so far holds no link. If that '[' already
+// contains a link, the ']' cannot close it and belongs to the URL.
+function scanExtendedUrl(s, i, stopBracket) {
   const n = s.length;
   let j;
   let prefix = "";
@@ -458,11 +462,12 @@ function scanExtendedUrl(s, i) {
     if (j >= n || !isDomainCode(s.charCodeAt(j))) return null;
   }
   // raw run: chars until whitespace or '<'; stop at a ']' that closes a
-  // link (followed by '(' or '[') so the link can still form
+  // link (followed by '(' or '[') so the link can still form -- but only
+  // when the nearest '[' opener can still form one (stopBracket)
   while (j < n) {
     const c = s.charCodeAt(j);
     if (c === 60 || isSpaceCode(c)) break;
-    if (c === 93 && j + 1 < n && (s.charCodeAt(j + 1) === 40 || s.charCodeAt(j + 1) === 91)) break;
+    if (stopBracket && c === 93 && j + 1 < n && (s.charCodeAt(j + 1) === 40 || s.charCodeAt(j + 1) === 91)) break;
     j++;
   }
   let url = s.slice(i, j);
@@ -688,6 +693,19 @@ function delimFlanking(s, i, run) {
 }
 
 // Does any node in the list (recursively) contain a link (not an image)?
+// True when the nearest '[' opener in nodes can still form a link:
+// there is one, and (for a non-image opener) its text so far holds no
+// link. An image opener can always form (links may sit in alt text).
+function linkableOpener(nodes) {
+  for (let j = nodes.length - 1; j >= 0; j--) {
+    if (nodes[j].t === 5) {
+      if (nodes[j].img) return true;
+      return !containsLink(nodes.slice(j + 1));
+    }
+  }
+  return false;
+}
+
 function containsLink(nodes) {
   for (const node of nodes) {
     if (node.t === 6 && !node.img) return true;
@@ -972,7 +990,7 @@ function parseInline(s, refs) {
       flush();
       i = resolveBracket(nodes, refs, s, i);
     } else if (c === 119 && !refs.suppressExt && s.startsWith("www.", i)) {
-      const u = scanExtendedUrl(s, i);
+      const u = scanExtendedUrl(s, i, linkableOpener(nodes));
       if (u) { flush(); nodes.push({ t: 7, href: u.href, text: u.text }); i = u.end; }
       else {
         const e = tryEmail(i);
@@ -984,7 +1002,7 @@ function parseInline(s, refs) {
         } else { text += "w"; i += 1; }
       }
     } else if ((c === 104 || c === 72 || c === 102 || c === 70) && !refs.suppressExt) {
-      const u = scanExtendedUrl(s, i);
+      const u = scanExtendedUrl(s, i, linkableOpener(nodes));
       if (u) {
         flush();
         nodes.push({ t: 7, href: u.href, text: u.text });
