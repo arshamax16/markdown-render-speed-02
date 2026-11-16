@@ -527,7 +527,11 @@ function trimUrl(url) {
 // Email autolink starting at i (i is the first char of the local part).
 // The extended autolink local part is restricted to [A-Za-z0-9._+-].
 // Returns the end index (exclusive) or 0.
-function scanEmail(s, i) {
+// trimUnderscore: when true, a trailing '_' in the domain is trimmed
+// (it is an emphasis delimiter, not part of the address); a trailing
+// '-' always invalidates the email. Without it, a trailing '_' or '-'
+// invalidates the email entirely (gfm-632/633).
+function scanEmail(s, i, trimUnderscore) {
   const n = s.length;
   let j = i;
   while (j < n) {
@@ -554,6 +558,11 @@ function scanEmail(s, i) {
     break;
   }
   if (dots === 0) return 0;
+  // a trailing '_' that is an emphasis delimiter is trimmed; anything
+  // else non-alphanumeric at the end invalidates the email
+  if (trimUnderscore) {
+    while (k > j + 1 && s.charCodeAt(k - 1) === 95) k--;
+  }
   // last label must end with an alphanumeric
   if (!isAlnumCode(s.charCodeAt(k - 1))) return 0;
   return k;
@@ -876,10 +885,24 @@ function parseInline(s, refs) {
   };
   // Try an extended-autolink email starting at pos (0 if none, or if the
   // previous char is an email-local char so the email starts earlier).
+  // A trailing '_' in the domain is trimmed only when an unmatched '_'
+  // opener sits in the nodes (it is the emphasis closer, not address).
   const tryEmail = (pos) => {
     const prev = pos > 0 ? s.charCodeAt(pos - 1) : -1;
-    if (prev !== -1 && (isAlnumCode(prev) || prev === 46 || prev === 43 || prev === 95 || prev === 45)) return 0;
-    return scanEmail(s, pos);
+    if (prev !== -1 && (isAlnumCode(prev) || prev === 46 || prev === 43 || prev === 95 || prev === 45)) {
+      // a '_' that is an emphasis opener does not extend the local part
+      if (prev === 95 && nodes.length > 0) {
+        const last = nodes[nodes.length - 1];
+        if (last.t === 4 && last.ch === "_" && last.o) {
+          // fall through to scanEmail
+        } else return 0;
+      } else return 0;
+    }
+    let trimU = false;
+    for (let q = nodes.length - 1; q >= 0; q--) {
+      if (nodes[q].t === 4 && nodes[q].ch === "_" && nodes[q].o) { trimU = true; break; }
+    }
+    return scanEmail(s, pos, trimU);
   };
   while (i < n) {
     const c = s.charCodeAt(i);
