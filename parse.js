@@ -1110,6 +1110,21 @@ function resolveBracket(nodes, refs, s, i) {
     nodes.push({ t: 9, s: "]" });
     return i + 1;
   }
+  // a code span whose content holds a backtick, followed by more text
+  // before the ']', blocks the link (marked quirk): the ']' is never
+  // reached as a closer. A trailing code span (last child) is fine.
+  // The emphasis delimiters inside the blocked text are literal too.
+  for (let ci = 0; ci < children.length; ci++) {
+    const ch = children[ci];
+    if (ch.t === 2 && ch.s.indexOf("`") !== -1 && ci < children.length - 1) {
+      nodes[k] = { t: 9, s: bracket.img ? "![" : "[" };
+      for (let di = k + 1; di < nodes.length; di++) {
+        if (nodes[di].t === 4) nodes[di] = { t: 0, s: nodes[di].ch.repeat(nodes[di].n) };
+      }
+      nodes.push({ t: 9, s: "]" });
+      return i + 1;
+    }
+  }
   const n = s.length;
   let href = null;
   let title = null;
