@@ -2386,6 +2386,20 @@ function parseBlocks(lines, lastNL, refs) {
           const col = colAt(line, adv.idx);
           const r = expandPartialTab(line, adv.idx, col, adv.partial);
           text = r.line.slice(r.idx);
+        } else if (idx > 0) {
+          // inside a container, tabs in the leading whitespace
+          // expand to spaces from their absolute column; each
+          // blockquote level beyond the first does not advance the
+          // column for this purpose. A tab that starts the content
+          // inside a blockquote expands to two spaces.
+          let bq = 0;
+          for (let d = 1; d < stack.length; d++) if (stack[d].t === "bq") bq++;
+          if (bq > 0 && text.charCodeAt(0) === 9) {
+            text = "  " + text.slice(1);
+          } else {
+            const col = colAt(line, adv.idx) - 2 * Math.max(0, bq - 1);
+            text = expandLeadingTabs(text, col);
+          }
         }
         codeAppend(leaf, text, ln);
         ln++;
