@@ -86,11 +86,13 @@ function entityEnd(s, i) {
 // a '%' that starts a valid %XX escape is left alone, as are the URI
 // characters encodeURI leaves alone. Entities are NOT decoded here.
 const URL_OK = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789;,/?:@&=+$_.!~*'()#%-";
+function _setOf(str) { const t = new Uint8Array(128); for (let i = 0; i < str.length; i++) t[str.charCodeAt(i)] = 1; return t; }
+const URL_OK_SET = _setOf(URL_OK);
 function encodeUrl(raw) {
   let out = '';
   for (let i = 0; i < raw.length; i++) {
     const c = raw.charCodeAt(i);
-    if (c < 128 && URL_OK.indexOf(raw[i]) >= 0) { out += raw[i]; continue; }
+    if (c < 128 && URL_OK_SET[c]) { out += raw[i]; continue; }
     if (c === 37 && i + 2 < raw.length && /^[0-9a-fA-F]{2}$/.test(raw.slice(i + 1, i + 3))) { out += raw.slice(i, i + 3); i += 2; continue; }
     if (c < 128) { out += '%' + c.toString(16).toUpperCase().padStart(2, '0'); continue; }
     // non-ASCII: UTF-8 percent-encoding
@@ -148,6 +150,7 @@ function collapseWs(s) {
 
 const DISALLOWED = new Set(['title', 'textarea', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'script', 'plaintext']);
 const SCHEME_OK = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-';
+const SCHEME_OK_SET = _setOf(SCHEME_OK);
 function normLabel(s) {
   // Unicode case folding: ß/ẞ fold to "ss" (toLowerCase alone gives ß),
   // plus the Latin ligatures.
@@ -278,10 +281,11 @@ function extBoundary(src, i) {
 // '_' is trimmed only when an unmatched '_' opener exists in the
 // delimiter stack, otherwise it invalidates the candidate.
 const EMAIL_LOCAL = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-';
+const EMAIL_LOCAL_SET = _setOf(EMAIL_LOCAL);
 function tryBareEmail(src, i, delims) {
   const n = src.length;
   let j = i;
-  while (j < n && EMAIL_LOCAL.indexOf(src[j]) >= 0) j++;
+  while (j < n && EMAIL_LOCAL_SET[src.charCodeAt(j)]) j++;
   if (j === i || j >= n || src.charCodeAt(j) !== 64) return null;
   j++;
   const dstart = j;
@@ -449,7 +453,7 @@ function trySchemeAutolink(src, i, delims) {
   const n = src.length;
   if (!isAlpha(src.charCodeAt(i))) return null;
   let j = i + 1;
-  while (j < n && SCHEME_OK.indexOf(src[j]) >= 0) j++;
+  while (j < n && SCHEME_OK_SET[src.charCodeAt(j)]) j++;
   const schemeLen = j - i;
   if (schemeLen < 2 || schemeLen > 32) return null;
   if (j >= n || src.charCodeAt(j) !== 58) return null;
@@ -886,7 +890,7 @@ function inlineParse(src, refs) {
           const ci = inner.indexOf(':');
           if (ci >= 2 && ci <= 32 && isAlpha(inner.charCodeAt(0))) {
             let sch = true;
-            for (let m = 0; m < ci; m++) if (SCHEME_OK.indexOf(inner[m]) < 0) { sch = false; break; }
+            for (let m = 0; m < ci; m++) if (!SCHEME_OK_SET[inner.charCodeAt(m)]) { sch = false; break; }
             if (sch && inner.length > ci + 1) ok = true;
           } else {
             const em = tryBareEmail(inner, 0, delims);
