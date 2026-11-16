@@ -968,13 +968,18 @@ function parseInline(s, refs) {
         if (a.kind === "auto") nodes.push({ t: 7, href: a.href, text: a.text, angle: true });
         else {
           const tagText = s.slice(i, a.end);
-          // an unclosed multi-line <a> tag suppresses extended
+          // an unclosed <a> tag in inline HTML suppresses extended
           // autolinks for the rest of the document (marked keeps an
-          // in-link state); an inline </a> clears it again
+          // in-link state); an inline </a> clears it again. The
+          // one exception is the bare self-closing tag <a/> (no
+          // space, no attribute), which does not suppress. (A lone
+          // <a> that forms a block-level HTML block never reaches
+          // this inline path, so it does not suppress.)
           if (/^<\/a(?=[\s>])/i.test(tagText)) {
             refs.suppressExt = false;
-          } else if (!refs.suppressExt && tagText.indexOf("\n") !== -1 &&
-              /^<a(?=[\s/>])/i.test(tagText) && !tagText.endsWith("/>") &&
+          } else if (!refs.suppressExt &&
+              /^<a(?=[\s/>])/i.test(tagText) &&
+              tagText.toLowerCase() !== "<a/>" &&
               !/<\/a(?=[\s>])/i.test(s.slice(a.end))) {
             refs.suppressExt = true;
           }
