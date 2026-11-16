@@ -345,9 +345,12 @@ function tryAngle(s, i) {
       if (isAsciiAlphaCode(ca) || isAsciiDigitCode(ca) || ca === 95 || ca === 46 || ca === 58 || ca === 45) j++;
       else break;
     }
-    while (j < n && isSpaceCode(s.charCodeAt(j))) j++;
-    if (j < n && s.charCodeAt(j) === 61) {
-      j++;
+    // a value follows only if '=' comes after optional whitespace;
+    // otherwise leave j at the whitespace for the next attribute
+    let k = j;
+    while (k < n && isSpaceCode(s.charCodeAt(k))) k++;
+    if (k < n && s.charCodeAt(k) === 61) {
+      j = k + 1;
       while (j < n && isSpaceCode(s.charCodeAt(j))) j++;
       if (j >= n) return tryBracketAutolink(s, i);
       const q = s.charCodeAt(j);
@@ -697,6 +700,7 @@ function plainText(nodes) {
       case 4: out += node.ch.repeat(node.n); break;
       case 6: case 8: out += plainText(node.ch); break;
       case 7: out += node.text; break;
+      case 9: out += node.s; break;
       default: break;
     }
   }
@@ -828,7 +832,13 @@ function parseInline(s, refs) {
     if (c === 92) {
       // backslash
       const d = i + 1 < n ? s.charCodeAt(i + 1) : -1;
-      if (d === 10) { flush(); nodes.push({ t: 3 }); i += 2; }
+      if (d === 10) {
+        flush();
+        nodes.push({ t: 3 });
+        i += 2;
+        // a hard break strips leading spaces/tabs on the next line
+        while (i < n && (s.charCodeAt(i) === 32 || s.charCodeAt(i) === 9)) i++;
+      }
       else if (d !== -1 && isAsciiPunctCode(d)) { text += s[i + 1]; i += 2; }
       else { text += "\\"; i += 1; }
     } else if (c === 96) {
@@ -870,6 +880,8 @@ function parseInline(s, refs) {
         flush();
         nodes.push({ t: 3 });
         i = j + 1;
+        // a hard break strips leading spaces/tabs on the next line
+        while (i < n && (s.charCodeAt(i) === 32 || s.charCodeAt(i) === 9)) i++;
       } else {
         text += s.slice(i, j);
         i = j;
@@ -993,9 +1005,16 @@ function resolveBracket(nodes, refs, s, i) {
   let end = -1;
   const after = i + 1 < n ? s.charCodeAt(i + 1) : -1;
   if (after === 40) {
-    // inline link: if it fails, there is no shortcut fallback
+    // inline link: if it fails, fall back to a shortcut reference
     const link = parseInlineLink(s, i + 1);
     if (link) { href = link.href; title = link.title; end = link.end; }
+    else {
+      const label = normalizeLabel(s.slice(bracket.start, i));
+      if (label !== "") {
+        const ref = refs.get(label);
+        if (ref) { href = ref.href; title = ref.title; end = i + 1; }
+      }
+    }
   } else if (after === 91) {
     // full or collapsed reference: if it fails, no shortcut fallback
     if (i + 2 < n && s.charCodeAt(i + 2) === 93) {
@@ -1276,8 +1295,13 @@ function htmlBlockType(line, idx) {
   const m6 = /^<\/?([a-z][a-z0-9-]*)([\s>\/]|$)/.exec(lower);
   if (m6 && BLOCK_TAGS.has(m6[1])) return 6;
   // type 7: a complete open or closing tag alone on the line
-  const m7 = /^<\/?[a-z][a-z0-9-]*(\s+[a-z_:][a-z0-9_.:-]*(\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*\/?>$/.exec(lower);
-  if (m7) return 7;
+  // (a closing tag takes no attributes)
+  if (lower.startsWith("</")) {
+    if (/^<\/[a-z][a-z0-9-]*\s*>$/.test(lower)) return 7;
+  } else {
+    const m7 = /^<[a-z][a-z0-9-]*(\s+[a-z_:][a-z0-9_.:-]*(\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*\/?>$/.exec(lower);
+    if (m7) return 7;
+  }
   return 0;
 }
 
