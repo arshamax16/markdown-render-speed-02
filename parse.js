@@ -1804,7 +1804,9 @@ function parseHtmlBlock(lines, i, b, info, st, isTop) {
   // A nested block that ends its container never gets the trailing newline.
   const nextLine = end < b ? lines[end] : undefined;
   const hadNL = nextLine !== undefined || (isTop && st.endsNL);
-  if (hadNL && (nextLine === undefined || !isBlankLine(nextLine))) text += '\n';
+  // The trailing newline is added iff the next line is non-empty
+  // (length > 0) — a whitespace-only line still counts as non-empty.
+  if (hadNL && (nextLine === undefined || nextLine.length > 0)) text += '\n';
   return { html: text, next: end };
 }
 
@@ -1910,6 +1912,7 @@ function parseList(lines, i, b, st, isTop) {
   let pending = [];
   let inPara = false; // the current item's content ends with an open paragraph
   let fence = null; // {char, len} while inside a fenced code block
+  let fenceContent = false; // the open fence already has a content line
   const flushItem = () => {
     if (cur) {
       // strip trailing blank lines from the item; an item with no lines
@@ -1934,7 +1937,7 @@ function parseList(lines, i, b, st, isTop) {
         flushItem();
       }
       cur = { lines: [mk.content], contentIndent: mk.contentIndent };
-      fence = null;
+      fence = null; fenceContent = false;
       const mf = matchFence(mk.content, indentOf(mk.content));
       if (mf && mf.indent <= 3) { fence = mf; inPara = false; }
       else inPara = isParaLine(mk.content, false, true, false);
@@ -1953,26 +1956,39 @@ function parseList(lines, i, b, st, isTop) {
       cur.lines.push(...pending, dedented);
       if (fence) {
         if (isFenceClose(dedented, fence)) fence = null;
+        else fenceContent = true;
         inPara = false;
       } else {
         const f = matchFence(dedented, indentOf(dedented));
-        if (f && f.indent <= 3) { fence = f; inPara = false; }
+        if (f && f.indent <= 3) { fence = f; fenceContent = false; inPara = false; }
         else inPara = isParaLine(dedented, hadBlank ? false : inPara, true, false);
       }
       pending = [];
       j++;
       continue;
     }
-    // Inside a fenced code block, a line is code content regardless of
-    // indent (a fence close is recognised by its dedented form).
+    // Inside a fenced code block, a line with indent < contentIndent is
+    // code content only once the fence already has a content line (or the
+    // line closes the fence). The FIRST content line anchors the fence:
+    // if it is under-indented, the code block is empty and the item ends.
     if (fence) {
       const dedented = dedentExpand(line, 0, cur.contentIndent);
-      cur.lines.push(...pending, dedented);
-      if (isFenceClose(dedented, fence)) fence = null;
-      inPara = false;
-      pending = [];
-      j++;
-      continue;
+      if (isFenceClose(dedented, fence)) {
+        cur.lines.push(...pending, dedented);
+        fence = null;
+        inPara = false;
+        pending = [];
+        j++;
+        continue;
+      }
+      if (fenceContent) {
+        cur.lines.push(...pending, dedented);
+        inPara = false;
+        pending = [];
+        j++;
+        continue;
+      }
+      break; // first content line under-indented: empty code block, item ends
     }
     // lazy continuation? Only when no blank line intervened (a blank line
     // closes the item's paragraph) and the item ends in an open paragraph.
