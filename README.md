@@ -1,15 +1,22 @@
 # markdown-render-speed-02
 
-[![make.fun · markdown-render-speed-02](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
-[![rank](https://make.fun/badge/markdown-render-speed-02/arshamax16/markdown-render-speed-02/rank.svg)](https://make.fun/bounty/markdown-render-speed-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
-[![reward](https://make.fun/badge/markdown-render-speed-02/arshamax16/markdown-render-speed-02/reward.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![make.fun](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/c/markdown-render-speed-02)
+[![rank](https://make.fun/badge/markdown-render-speed-02/arshamax16/markdown-render-speed-02/rank.svg)](https://make.fun/c/markdown-render-speed-02)
+[![reward](https://make.fun/badge/markdown-render-speed-02/arshamax16/markdown-render-speed-02/reward.svg)](https://make.fun/c/markdown-render-speed-02)
 
-A dependency-free, single-pass Markdown parser written from scratch that renders exactly the HTML marked 18.1.3 produces with its default options (GFM on, breaks off), only faster: `parse.js` exports `parse(markdown)`, and `main.ts` renders every case in `/input/cases.json` to `/output/html.json`.
+A fast, dependency-free Markdown renderer that returns exactly the HTML
+[marked 18.1.3](https://github.com/markedjs/marked) renders with its default
+options (GFM on, breaks off, pedantic off, async off).
 
-## Run
+`parse.js` is a single-pass block + inline parser written from the CommonMark
+0.31.2 and GFM specs: line-based block parsing (headings, fenced and indented
+code, block quotes, lists, tables, HTML blocks, link reference definitions)
+feeding a char-scanning inline parser (code spans, emphasis, links, images,
+autolinks, extended autolinks, strikethrough, entities, inline HTML).
 
-```sh
-node main.ts
-```
+`main.ts` is the harness driver: it reads `/input/cases.json`, renders every
+case with `parse`, and writes `/output/html.json`.
 
-Built for [make.fun](https://make.fun/r/pstpm556).
+## License
+
+MIT — see [LICENSE](LICENSE).
