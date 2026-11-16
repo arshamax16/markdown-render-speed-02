@@ -1986,8 +1986,9 @@ function parseBlocks(lines, lastNL, refs) {
       ch.push(block);
       htmlAppend(block, line.slice(idx), ln);
       if (ht >= 1 && ht <= 5 && htmlBlockEnds(ht, line.slice(idx))) {
-        // ends on the same line; a following blank line drops the trailing \n
-        if (ln + 1 < lines.length && isBlankLine(lines[ln + 1]) && block.raw.endsWith("\n")) {
+        // ends on the same line; a following EMPTY line drops the trailing \n
+        // (a whitespace-only line does not)
+        if (ln + 1 < lines.length && lines[ln + 1] === "" && block.raw.endsWith("\n")) {
           block.raw = block.raw.slice(0, -1);
         }
         return null;
@@ -2465,8 +2466,9 @@ function parseBlocks(lines, lastNL, refs) {
       } else if (leaf.t === "html") {
         if (leaf.type >= 1 && leaf.type <= 5 && htmlBlockEnds(leaf.type, line.slice(idx))) {
           htmlAppend(leaf, line.slice(idx), ln);
-          // a following blank line drops the trailing \n
-          if (ln + 1 < lines.length && isBlankLine(lines[ln + 1]) && leaf.raw.endsWith("\n")) {
+          // a following EMPTY line drops the trailing \n
+          // (a whitespace-only line does not)
+          if (ln + 1 < lines.length && lines[ln + 1] === "" && leaf.raw.endsWith("\n")) {
             leaf.raw = leaf.raw.slice(0, -1);
           }
           closeLeaf();
