@@ -957,6 +957,27 @@ function parseInline(s, refs) {
         nodes.push({ t: 7, href: "mailto:" + encodeHref(raw.slice(7)), text: raw });
         i = e;
       } else { text += "m"; i += 1; }
+    } else if (c === 120 && s.startsWith("xmpp:", i)) {
+      // xmpp: + email + optional single path segment
+      const e = scanEmail(s, i + 5);
+      if (e > 0) {
+        let end = e;
+        if (end < n && s.charCodeAt(end) === 47) {
+          let k = end + 1;
+          while (k < n) {
+            const cc = s.charCodeAt(k);
+            if (cc === 47 || cc === 60 || isSpaceCode(cc)) break;
+            k++;
+          }
+          end = k;
+        }
+        const raw = trimUrl(s.slice(i, end));
+        if (raw.length > 0) {
+          flush();
+          nodes.push({ t: 7, href: encodeHref(raw), text: raw });
+          i = i + raw.length;
+        } else { text += "x"; i += 1; }
+      } else { text += "x"; i += 1; }
     } else if (isAlnumCode(c) || c === 46 || c === 43 || c === 95 || c === 45) {
       // possible email start
       const e = tryEmail(i);
