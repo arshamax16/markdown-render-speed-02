@@ -1522,9 +1522,11 @@ function bqMatch(ln) {
   if (ind.indent > 3) return null;
   const s = ln.s;
   if (s.charCodeAt(ind.pos) !== 62) return null;
-  // The whitespace run after '>' is expanded to spaces (by absolute column);
-  // one of those spaces is the optional space after the marker.
-  let col = ln.c + ind.indent + 1, pos = ind.pos + 1, ws = 0;
+  // The whitespace run after '>' is expanded to spaces (one of those
+  // spaces is the optional space after the marker). Tab stops are
+  // computed from the start of this line's text, so that nesting a
+  // blockquote does not change the expansion.
+  let col = ind.indent + 1, pos = ind.pos + 1, ws = 0;
   while (pos < s.length) {
     const ch = s.charCodeAt(pos);
     if (ch === 32) { col++; ws++; pos++; }
@@ -1532,7 +1534,7 @@ function bqMatch(ln) {
     else break;
   }
   const remaining = ws > 0 ? ws - 1 : 0;
-  return { s: ' '.repeat(remaining) + s.slice(pos), c: col - remaining, eol: ln.eol };
+  return { s: ' '.repeat(remaining) + s.slice(pos), c: ln.c + ind.indent + 1, eol: ln.eol };
 }
 
 function listMatch(ln) {
