@@ -335,12 +335,15 @@ function trimUrl(s) {
     while (end > 0) {
       const c = s.charCodeAt(end - 1);
       if (c === 41) {
-        let open = 0, close = 0;
-        for (let k = 0; k < end; k++) {
-          if (s.charCodeAt(k) === 40) open++;
-          else if (s.charCodeAt(k) === 41) close++;
+        // A trailing ')' is trimmed only if no unmatched '(' precedes
+        // it (depth scan: a ')' with no open '(' before it is ignored,
+        // so a middle unmatched ')' does not unbalance the trailing one).
+        let depth = 0;
+        for (let k = 0; k < end - 1; k++) {
+          if (s.charCodeAt(k) === 40) depth++;
+          else if (s.charCodeAt(k) === 41) { if (depth > 0) depth--; }
         }
-        if (close > open) { end--; changed = true; continue; }
+        if (depth === 0) { end--; changed = true; continue; }
         break;
       }
       if (c === 59) {
