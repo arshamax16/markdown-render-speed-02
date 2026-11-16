@@ -2027,7 +2027,7 @@ function parseBlocks(lines, lastNL, refs) {
     const ind0 = scanIndent(line, idx);
     if (ind0.col <= 3 && ind0.next < line.length && line.charCodeAt(ind0.next) === 62) {
       closeLeaf();
-      const block = { t: "bq", children: [] };
+      const block = { t: "bq", children: [], indent: ind0.col };
       ch.push(block);
       stack.push(block);
       let nidx = ind0.next + 1;
@@ -2461,13 +2461,21 @@ function parseBlocks(lines, lastNL, refs) {
         const lm = !ik ? parseListMarker(line, failIdx) : null;
         const newList = lm && lm.ordered && !lm.empty && !isHR(line, failIdx);
         if (!ik && !newList) {
-          // lazy line: the FIRST lazy line strips 4 columns if its indent
-          // is >= 4; later lazy lines are verbatim, except a setext
-          // underline inside a blockquote gets 4 spaces (replacing its
-          // leading whitespace) when the paragraph already has a lazy line
+          // lazy line: inside a list item, EVERY lazy line strips 4
+          // columns if its indent is >= 4; in a plain blockquote
+          // only the FIRST lazy line strips, later ones are
+          // verbatim, except a setext underline inside a blockquote
+          // gets 4 spaces (replacing its leading whitespace) when
+          // the paragraph already has a lazy line
           let text = line.slice(failIdx);
           const ind = scanIndent(line, failIdx);
-          if (!leaf.hasLazy) {
+          let inItem = false;
+          for (let d = stack.length - 1; d >= 1; d--) {
+            if (stack[d].t === "bq") continue;
+            if (stack[d].t === "item") inItem = true;
+            break;
+          }
+          if (!leaf.hasLazy || inItem) {
             if (ind.col >= 4) {
               const adv = advanceCols(line, failIdx, 4);
               text = line.slice(adv.idx);
@@ -2528,16 +2536,11 @@ function parseBlocks(lines, lastNL, refs) {
           // inside a container, tabs in the leading whitespace
           // expand to spaces from their absolute column; each
           // blockquote level beyond the first does not advance the
-          // column for this purpose. A tab that starts the content
-          // inside a blockquote expands to two spaces.
+          // column for this purpose
           let bq = 0;
           for (let d = 1; d < stack.length; d++) if (stack[d].t === "bq") bq++;
-          if (bq > 0 && text.charCodeAt(0) === 9) {
-            text = "  " + text.slice(1);
-          } else {
-            const col = colAt(line, adv.idx) - 2 * Math.max(0, bq - 1);
-            text = expandLeadingTabs(text, col);
-          }
+          const col = colAt(line, adv.idx) - 2 * Math.max(0, bq - 1);
+          text = expandLeadingTabs(text, col);
         }
         codeAppend(leaf, text, ln);
         ln++;
