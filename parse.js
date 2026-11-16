@@ -488,7 +488,8 @@ function inlineParse(src, refs) {
   let buf = '';
   const delims = [];
   const brackets = [];
-  const tickUnmatched = [];
+  const tickUnmatched = []; // unmatched backtick runs {pos,len,inLink}
+  const codeOpens = []; // successful code span openings {pos,len}
   const tickSpans = []; // code spans {start,end} whose content holds a backtick
   const images = []; // {idx, marker, href, title}
   const autoSpans = []; // extended autolinks, to revert if a link forms around them
@@ -545,8 +546,8 @@ function inlineParse(src, refs) {
     const br = inLinkText(pos);
     if (br) {
       for (let t = 0; t < tickUnmatched.length; t++) {
-        if (tickUnmatched[t] > br.srcPos && tickUnmatched[t] < pos) {
-          tickUnmatched.push(pos);
+        if (tickUnmatched[t].pos > br.srcPos && tickUnmatched[t].pos < pos) {
+          tickUnmatched.push({ pos, len: run, inLink: true });
           buf += src.slice(pos, k);
           return k;
         }
@@ -554,7 +555,7 @@ function inlineParse(src, refs) {
     }
     const close = findCodeClose(k, run);
     if (close < 0) {
-      tickUnmatched.push(pos);
+      tickUnmatched.push({ pos, len: run, inLink: !!br });
       buf += src.slice(pos, k);
       return k;
     }
@@ -564,7 +565,7 @@ function inlineParse(src, refs) {
       if (li >= 0) {
         const L = parseInlineLink(content, li + 1, refs);
         if (L) {
-          tickUnmatched.push(pos);
+          tickUnmatched.push({ pos, len: run, inLink: true });
           buf += src.slice(pos, k);
           return k;
         }
@@ -577,6 +578,7 @@ function inlineParse(src, refs) {
       if (nonSpace) content = content.slice(1, -1);
     }
     if (content.indexOf('`') >= 0) tickSpans.push({ start: pos, end: close + run });
+    codeOpens.push({ pos, len: run });
     flush();
     out.push('<code>' + escText(content) + '</code>');
     kind.push(2);
@@ -1046,6 +1048,21 @@ function inlineParse(src, refs) {
         if ((op.close || cl.open) && (op.len + cl.len) % 3 === 0 && op.len % 3 !== 0) continue;
         // Tildes match only equal-length runs (1 with 1, 2 with 2).
         if (cl.ch === 126 && op.len !== cl.len) continue;
+        // A phantom code span: an unmatched backtick run inside a link
+        // text pairs with a later same-length code-span opening, and
+        // emphasis strictly between them does not form.
+        if (tickUnmatched.length && codeOpens.length) {
+          let phantom = false;
+          for (let u = 0; u < tickUnmatched.length && !phantom; u++) {
+            const U = tickUnmatched[u];
+            if (!U.inLink || U.pos >= op.pos) continue;
+            for (let c = 0; c < codeOpens.length; c++) {
+              const C = codeOpens[c];
+              if (C.len === U.len && C.pos > cl.pos) { phantom = true; break; }
+            }
+          }
+          if (phantom) continue;
+        }
         // A single-'*' em does not form when it encloses a '**' strong
         // that is preceded by whitespace and followed by non-whitespace
         // text (the strong itself still forms).
