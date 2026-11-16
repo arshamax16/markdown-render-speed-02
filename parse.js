@@ -1752,7 +1752,9 @@ function parseFencedCode(lines, i, b, fence) {
         }
       }
     }
-    content.push(dedentChars(line, fence.indent));
+    // A tilde fence never dedents its content; a backtick fence dedents
+    // by the fence's indent.
+    content.push(fence.char === '~' ? line : dedentChars(line, fence.indent));
     j++;
   }
   // Fenced code keeps all content lines except exactly one trailing
@@ -1804,9 +1806,13 @@ function parseHtmlBlock(lines, i, b, info, st, isTop) {
   // A nested block that ends its container never gets the trailing newline.
   const nextLine = end < b ? lines[end] : undefined;
   const hadNL = nextLine !== undefined || (isTop && st.endsNL);
-  // The trailing newline is added iff the next line is non-empty
-  // (length > 0) — a whitespace-only line still counts as non-empty.
-  if (hadNL && (nextLine === undefined || nextLine.length > 0)) text += '\n';
+  // The trailing newline is added iff the next line is non-blank — except
+  // for types 2-5 (comment, PI, declaration, CDATA), where a whitespace-only
+  // (but non-empty) next line still counts.
+  const nextCounts = info.type >= 2 && info.type <= 5
+    ? (nextLine === undefined || nextLine.length > 0)
+    : (nextLine === undefined || !isBlankLine(nextLine));
+  if (hadNL && nextCounts) text += '\n';
   return { html: text, next: end };
 }
 
@@ -1997,7 +2003,10 @@ function parseList(lines, i, b, st, isTop) {
     const lsi = indentOf(line);
     const lazySetext = isSetextLine(line, lsi) && !isHrLine(line, lsi);
     if (pending.length === 0 && inPara && (isParaLine(line, true, true, true) || lazySetext)) {
-      let lazy = dedentExpand(line, 0, cur.contentIndent);
+      // A lazy line with indent below the content indent keeps its leading
+      // spaces; otherwise dedent by the content indent, then by 4 more
+      // columns when at least 4 remain.
+      let lazy = lsi.cols < cur.contentIndent ? line : dedentExpand(line, 0, cur.contentIndent);
       if (indentOf(lazy).cols >= 4) lazy = lazy.slice(4);
       if (cur.lines.length && cur.lines[cur.lines.length - 1].length > 0 && !isBlankLine(cur.lines[cur.lines.length - 1])) {
         cur.lines[cur.lines.length - 1] += '\n' + lazy;
