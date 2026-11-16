@@ -369,6 +369,17 @@ function trimUrl(s) {
   return s.slice(0, end);
 }
 
+// Case-insensitive prefix check (lower is all lowercase).
+function startsWithCI(src, i, lower) {
+  if (i + lower.length > src.length) return false;
+  for (let k = 0; k < lower.length; k++) {
+    let c = src.charCodeAt(i + k);
+    if (c >= 65 && c <= 90) c += 32;
+    if (c !== lower.charCodeAt(k)) return false;
+  }
+  return true;
+}
+
 // Scan a www./scheme:// URL run starting at src[i].
 // Returns [href, display, end] or null. Validation is loose: the first
 // character after the prefix must be alphanumeric or '-', the rest is a
@@ -377,9 +388,9 @@ function tryUrlAutolink(src, i, brackets, refs) {
   const n = src.length;
   let prefixLen, addScheme;
   if (src.startsWith('www.', i)) { prefixLen = 4; addScheme = 'http://'; }
-  else if (src.startsWith('https://', i)) { prefixLen = 8; addScheme = ''; }
-  else if (src.startsWith('http://', i)) { prefixLen = 7; addScheme = ''; }
-  else if (src.startsWith('ftp://', i)) { prefixLen = 6; addScheme = ''; }
+  else if (startsWithCI(src, i, 'https://')) { prefixLen = 8; addScheme = ''; }
+  else if (startsWithCI(src, i, 'http://')) { prefixLen = 7; addScheme = ''; }
+  else if (startsWithCI(src, i, 'ftp://')) { prefixLen = 6; addScheme = ''; }
   else return null;
   const first = i + prefixLen;
   if (first >= n) return null;
@@ -919,8 +930,8 @@ function inlineParse(src, refs) {
           i = u[2];
           continue;
         }
-      } else if ((c === 104 && (src.startsWith('http://', i) || src.startsWith('https://', i))) ||
-        (c === 102 && src.startsWith('ftp://', i))) {
+      } else if (((c === 104 || c === 72) && (startsWithCI(src, i, 'http://') || startsWithCI(src, i, 'https://'))) ||
+        ((c === 102 || c === 70) && startsWithCI(src, i, 'ftp://'))) {
         const u = tryUrlAutolink(src, i, brackets, refs);
         if (u) {
           flush();
@@ -955,7 +966,7 @@ function inlineParse(src, refs) {
       const d = src.charCodeAt(i);
       if (d === 10 || d === 92 || d === 96 || d === 42 || d === 95 || d === 126 || d === 91 || d === 93 || d === 33 || d === 60 || d === 38) break;
       if (!seenA && d === 119 && src.startsWith('www.', i)) break;
-      if (!seenA && ((d === 104 && (src.startsWith('http://', i) || src.startsWith('https://', i))) || (d === 102 && src.startsWith('ftp://', i)))) break;
+      if (!seenA && ((d === 104 || d === 72) && (startsWithCI(src, i, 'http://') || startsWithCI(src, i, 'https://')) || ((d === 102 || d === 70) && startsWithCI(src, i, 'ftp://')))) break;
       if (!seenA && extBoundary(src, i) && (isAlnum(d) || d === 46 || d === 43 || d === 45 || d === 37)) break;
       i++;
     }
@@ -1897,6 +1908,17 @@ function handleBlock(lines, i, bs, refs, collect, tight) {
   return { html: '', next: i + 1 };
 }
 
+// Expand a leading tab to spaces (to the next tab stop from ln.c).
+// Container sub-lines expand tabs by absolute column; top-level lines
+// keep tabs verbatim.
+function expandLeadingTab(ln) {
+  if (ln.s.charCodeAt(0) !== 9) return ln;
+  const spaces = 4 - (ln.c % 4);
+  const out = { s: ' '.repeat(spaces) + ln.s.slice(1), c: ln.c + spaces, eol: ln.eol };
+  if (ln.lazy) out.lazy = true;
+  return out;
+}
+
 function collectItem(lines, j, lm) {
   const sub = [];
   let firstLine = lm.content;
@@ -1937,7 +1959,7 @@ function collectItem(lines, j, lm) {
     const ind = lineIndent(ln);
     if (ind.indent >= lm.contentIndent) {
       if (closed) break;
-      const stripped = stripCols(ln, lm.contentIndent, false);
+      const stripped = expandLeadingTab(stripCols(ln, lm.contentIndent, false));
       sub.push(stripped);
       lastKind = classifyAdded(stripped, lastKind);
       k++;
