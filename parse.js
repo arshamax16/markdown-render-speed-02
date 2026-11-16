@@ -864,7 +864,20 @@ function parseInline(s, refs) {
       if (a) {
         flush();
         if (a.kind === "auto") nodes.push({ t: 7, href: a.href, text: a.text, angle: true });
-        else nodes.push({ t: 1, s: s.slice(i, a.end) });
+        else {
+          const tagText = s.slice(i, a.end);
+          // an unclosed multi-line <a> tag suppresses extended
+          // autolinks for the rest of the document (marked keeps an
+          // in-link state); an inline </a> clears it again
+          if (/^<\/a(?=[\s>])/i.test(tagText)) {
+            refs.suppressExt = false;
+          } else if (!refs.suppressExt && tagText.indexOf("\n") !== -1 &&
+              /^<a(?=[\s/>])/i.test(tagText) && !tagText.endsWith("/>") &&
+              !/<\/a(?=[\s>])/i.test(s.slice(a.end))) {
+            refs.suppressExt = true;
+          }
+          nodes.push({ t: 1, s: tagText });
+        }
         i = a.end;
       } else { text += "<"; i += 1; }
     } else if (c === 38) {
@@ -929,7 +942,7 @@ function parseInline(s, refs) {
       // ] : try to form a link / image
       flush();
       i = resolveBracket(nodes, refs, s, i);
-    } else if (c === 119 && s.startsWith("www.", i)) {
+    } else if (c === 119 && !refs.suppressExt && s.startsWith("www.", i)) {
       const u = scanExtendedUrl(s, i);
       if (u) { flush(); nodes.push({ t: 7, href: u.href, text: u.text }); i = u.end; }
       else {
@@ -941,7 +954,7 @@ function parseInline(s, refs) {
           i = e;
         } else { text += "w"; i += 1; }
       }
-    } else if (c === 104 || c === 72 || c === 102 || c === 70) {
+    } else if ((c === 104 || c === 72 || c === 102 || c === 70) && !refs.suppressExt) {
       const u = scanExtendedUrl(s, i);
       if (u) {
         flush();
@@ -956,7 +969,7 @@ function parseInline(s, refs) {
           i = e;
         } else { text += s[i]; i += 1; }
       }
-    } else if (c === 109 && s.startsWith("mailto:", i)) {
+    } else if (c === 109 && !refs.suppressExt && s.startsWith("mailto:", i)) {
       const e = scanEmail(s, i + 7);
       if (e > 0) {
         flush();
@@ -964,7 +977,7 @@ function parseInline(s, refs) {
         nodes.push({ t: 7, href: "mailto:" + encodeHref(raw.slice(7)), text: raw });
         i = e;
       } else { text += "m"; i += 1; }
-    } else if (c === 120 && s.startsWith("xmpp:", i)) {
+    } else if (c === 120 && !refs.suppressExt && s.startsWith("xmpp:", i)) {
       // xmpp: + email + optional single path segment
       const e = scanEmail(s, i + 5);
       if (e > 0) {
@@ -985,7 +998,7 @@ function parseInline(s, refs) {
           i = i + raw.length;
         } else { text += "x"; i += 1; }
       } else { text += "x"; i += 1; }
-    } else if (isAlnumCode(c) || c === 46 || c === 43 || c === 95 || c === 45) {
+    } else if ((isAlnumCode(c) || c === 46 || c === 43 || c === 95 || c === 45) && !refs.suppressExt) {
       // possible email start
       const e = tryEmail(i);
       if (e > 0) {
@@ -1737,7 +1750,17 @@ function matchContainers(stack, line) {
   let firstFailure = -1;
   let failIdx = 0;
   let sibling = null;
+  // a line that is blank from the current cursor matches every
+  // remaining container (it never fails one): check before each
+  const restBlank = (from) => {
+    for (let k = from; k < line.length; k++) {
+      const c = line.charCodeAt(k);
+      if (c !== 32 && c !== 9) return false;
+    }
+    return true;
+  };
   for (let d = 1; d < stack.length; d++) {
+    if (restBlank(idx)) break;
     const cont = stack[d];
     if (cont.t === "bq") {
       if (firstFailure !== -1) break;
