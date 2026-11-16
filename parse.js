@@ -1661,6 +1661,18 @@ function classifyAdded(ln, lastKind) {
   return 'other';
 }
 
+// A line of 0-3 spaces + a single tab (then only whitespace) is a
+// table row of empty cells, not a blank line.
+function isTableTabRow(ln) {
+  const s = ln.s;
+  let i = 0;
+  while (i < s.length && s.charCodeAt(i) === 32) i++;
+  if (i > 3 || i >= s.length || s.charCodeAt(i) !== 9) return false;
+  i++;
+  while (i < s.length && (s.charCodeAt(i) === 32 || s.charCodeAt(i) === 9)) i++;
+  return i === s.length;
+}
+
 function tryTable(rest, refs, collect) {
   if (rest.length < 2) return null;
   if (lineIndent(rest[1]).indent > 3) return null;
@@ -1674,7 +1686,7 @@ function tryTable(rest, refs, collect) {
     aligns.push(a);
   }
   let bodyEnd = 2;
-  while (bodyEnd < rest.length && lineIndent(rest[bodyEnd]).indent <= 3) bodyEnd++;
+  while (bodyEnd < rest.length && (lineIndent(rest[bodyEnd]).indent <= 3 || isTableTabRow(rest[bodyEnd]))) bodyEnd++;
   // In collect mode the inline content is not needed (and must not
   // touch document-wide inline state); only the extent matters.
   if (collect) return { html: '', consumed: bodyEnd };
@@ -1774,6 +1786,16 @@ function parseBlocks(lines, refs, collect, tight, taskHtml) {
 
   while (i < n) {
     const ln = lines[i];
+    // A tab-row line (0-3 spaces + tab) is a table row of empty cells,
+    // not a blank line, when the open paragraph is a table.
+    if (para.length && isTableTabRow(ln)) {
+      const probe = tryTable(para.concat([ln]), refs, true);
+      if (probe && probe.consumed === para.length + 1) {
+        para.push(ln);
+        i++;
+        continue;
+      }
+    }
     if (paraBlank(ln)) { flushPara(); pendingBlank = true; i++; continue; }
     // A whitespace-only last line with no paragraph open is skipped.
     if (blankLine(ln) && !para.length) { i++; continue; }
