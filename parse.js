@@ -32,6 +32,13 @@ function isSpaceCode(c) {
   return c === 32 || c === 9 || c === 10 || c === 11 || c === 12 || c === 13 || c === 133;
 }
 
+// Unicode whitespace for emphasis flanking: JS \s plus U+0085.
+function isUnicodeSpaceCode(c) {
+  if (c === 32 || c === 9 || c === 10 || c === 11 || c === 12 || c === 13 || c === 133) return true;
+  if (c === 160 || c === 5760 || c === 8232 || c === 8233 || c === 8239 || c === 8287 || c === 12288 || c === 65279) return true;
+  return c >= 8192 && c <= 8202;
+}
+
 // Escape text content: & < > " '
 function escapeHtml(s) {
   let out = "";
@@ -660,8 +667,8 @@ function delimFlanking(s, i, run) {
   const n = s.length;
   const before = i > 0 ? s.charCodeAt(i - 1) : 10;
   const after = i + run < n ? s.charCodeAt(i + run) : 10;
-  const beforeSpace = isSpaceCode(before);
-  const afterSpace = isSpaceCode(after);
+  const beforeSpace = isUnicodeSpaceCode(before);
+  const afterSpace = isUnicodeSpaceCode(after);
   const beforePunct = isPunctCode(before);
   const afterPunct = isPunctCode(after);
   const leftFlanking = !afterSpace && (!afterPunct || beforeSpace || beforePunct);
@@ -754,14 +761,16 @@ function processEmphasis(nodes) {
       for (let oi = di - 1; oi >= 0; oi--) {
         const opener = delims[oi];
         if (opener.node.n === 0 || !opener.node.o || opener.node.ch !== closer.node.ch) continue;
-        if ((opener.node.o || closer.node.c) && ((opener.node.n + closer.node.n) % 3 === 0)) continue;
+        // odd-match rule: skip the opener if it can close or the closer
+        // can open and the sum of the runs is a multiple of 3
+        if ((opener.node.c || closer.node.o) && ((opener.node.n + closer.node.n) % 3 === 0)) continue;
         found = oi;
         break;
       }
       if (found === -1) continue;
       const opener = delims[found];
       const use = (opener.node.n >= 2 && closer.node.n >= 2) ? 2 : 1;
-      const tag = use === 2 ? "strong" : "em";
+      const tag = closer.node.ch === "~" ? "del" : (use === 2 ? "strong" : "em");
       const inner = nodes.slice(opener.idx + 1, closer.idx);
       processEmphasis(inner);
       const wrapper = { t: 8, tag, ch: inner };
@@ -770,9 +779,9 @@ function processEmphasis(nodes) {
       // replace the range [opener.idx, closer.idx] with
       // [opener leftover?, wrapper, closer leftover?]
       const repl = [];
-      if (opener.node.n > 0) repl.push({ t: 4, ch: opener.node.ch, n: opener.node.n, o: false, c: false });
+      if (opener.node.n > 0) repl.push({ t: 4, ch: opener.node.ch, n: opener.node.n, o: opener.node.o, c: opener.node.c });
       repl.push(wrapper);
-      if (closer.node.n > 0) repl.push({ t: 4, ch: closer.node.ch, n: closer.node.n, o: false, c: false });
+      if (closer.node.n > 0) repl.push({ t: 4, ch: closer.node.ch, n: closer.node.n, o: closer.node.o, c: closer.node.c });
       nodes.splice(opener.idx, closer.idx - opener.idx + 1, ...repl);
       matched = true;
       break;
@@ -812,10 +821,15 @@ function parseInline(s, refs) {
       else if (d !== -1 && isAsciiPunctCode(d)) { text += s[i + 1]; i += 2; }
       else { text += "\\"; i += 1; }
     } else if (c === 96) {
-      // backtick run: code span
+      // backtick run: code span; an unmatched run is literal text
       const cs = scanCodeSpan(s, i);
       if (cs) { flush(); nodes.push({ t: 2, s: cs.content }); i = cs.end; }
-      else { text += "`"; i += 1; }
+      else {
+        let j = i;
+        while (j < n && s.charCodeAt(j) === 96) j++;
+        text += s.slice(i, j);
+        i = j;
+      }
     } else if (c === 60) {
       // < : autolink or inline HTML
       const a = tryAngle(s, i);
@@ -837,6 +851,18 @@ function parseInline(s, refs) {
         }
         i += el;
       } else { text += "&"; i += 1; }
+    } else if (c === 32) {
+      // spaces: 2+ spaces followed by a newline is a hard break
+      let j = i;
+      while (j < n && s.charCodeAt(j) === 32) j++;
+      if (j - i >= 2 && j < n && s.charCodeAt(j) === 10) {
+        flush();
+        nodes.push({ t: 3 });
+        i = j + 1;
+      } else {
+        text += s.slice(i, j);
+        i = j;
+      }
     } else if (c === 42 || c === 95 || c === 126) {
       // delimiter run
       let j = i;
@@ -1462,7 +1488,12 @@ function renderBlock(b, refs) {
     case "code": {
       let out = "<pre><code";
       if (b.info) out += ' class="language-' + escapeAttr(b.info) + '"';
-      out += ">" + escapeHtml(b.content) + "</code></pre>\n";
+      let content = b.content;
+      // a fenced code block drops its final trailing blank line
+      if (!b.indented && (content === "\n" || content.endsWith("\n\n"))) {
+        content = content.slice(0, -1);
+      }
+      out += ">" + escapeHtml(content) + "</code></pre>\n";
       return out;
     }
     case "html":
@@ -1518,17 +1549,33 @@ function renderItem(item, list, refs) {
   let out = "<li>";
   const children = item.children;
   if (children.length === 0) { out += "</li>\n"; return out; }
+  const bare = !list.loose;
   const first = children[0];
   if (first.t === "para") {
-    // the first paragraph gets the task-list treatment; in a tight list it
-    // renders without <p> tags, in a loose list with them
-    out += renderParaContent(first, refs, !list.loose);
-    for (let k = 1; k < children.length; k++) out += renderBlock(children[k], refs);
+    // the first paragraph gets the task-list treatment; in a tight list
+    // every paragraph renders without <p> tags
+    out += renderParaContent(first, refs, bare);
+    for (let k = 1; k < children.length; k++) {
+      const child = children[k];
+      if (child.t === "para") out += renderParaBare(child, refs, bare);
+      else out += renderBlock(child, refs);
+    }
   } else {
-    for (const child of children) out += renderBlock(child, refs);
+    for (const child of children) {
+      if (child.t === "para") out += renderParaBare(child, refs, bare);
+      else out += renderBlock(child, refs);
+    }
   }
   out += "</li>\n";
   return out;
+}
+
+// Render a paragraph that is not the first child of its item: in a tight
+// list it has no <p> tags and no task-list checkbox.
+function renderParaBare(para, refs, bare) {
+  const text = para.lines.join("\n");
+  const inner = parseInline(text, refs);
+  return bare ? inner : "<p>" + inner + "</p>\n";
 }
 
 // Render a paragraph's content, applying the task-list checkbox if present.
@@ -1605,6 +1652,12 @@ function matchContainers(stack, line) {
       const saveIdx = idx;
       const ind = scanIndent(line, idx);
       if (ind.col >= cont.contentIndent) {
+        // an empty item that saw a blank line is closed: no more content
+        if (cont.children.length === 0 && cont.sawBlank) {
+          firstFailure = d;
+          failIdx = saveIdx;
+          break;
+        }
         const adv = advanceCols(line, idx, cont.contentIndent);
         if (adv.partial > 0) {
           const col = colAt(line, adv.idx);
@@ -1620,6 +1673,12 @@ function matchContainers(stack, line) {
         const m = parseListMarker(line, idx);
         if (m && ind.col <= 3 && !isHR(line, idx) && markerMatchesList(m, list)) {
           sibling = { depth: d, marker: m };
+          break;
+        }
+        // an empty item that saw a blank line is closed: no more content
+        if (cont.children.length === 0 && cont.sawBlank) {
+          firstFailure = d;
+          failIdx = saveIdx;
           break;
         }
         firstFailure = d;
@@ -1648,7 +1707,9 @@ function interruptKind(line, idx, paraOpen) {
       // an empty bullet item cannot interrupt a paragraph
       return null;
     }
-    if (m.start === 1) return "list";
+    // an ordered list interrupts a paragraph only if it starts with 1
+    // and is not empty
+    if (m.start === 1 && !m.empty) return "list";
     return null;
   }
   return null;
@@ -1691,10 +1752,11 @@ function parseBlocks(lines, lastNL, refs) {
   // `container` is the current innermost container (for ref-def scoping).
   const startBlock = (ln, idx, line, paraStart) => {
     const ch = children();
-    // looseness: a new block inside an item that saw a blank line and
-    // already has a child makes the item's list loose
+    // looseness: a new block inside an item that saw a blank line (or
+    // whose previous line was blank) and already has a child makes the
+    // item's list loose
     const top = stack[stack.length - 1];
-    if (top.t === "item" && top.sawBlank && top.children.length >= 1) {
+    if (top.t === "item" && (top.sawBlank || lastBlankLn === ln - 1) && top.children.length >= 1) {
       const list = stack[stack.length - 2];
       if (list && list.t === "list") list.loose = true;
       top.sawBlank = false;
@@ -1845,7 +1907,7 @@ function parseBlocks(lines, lastNL, refs) {
   // Parses leading link reference definitions; returns {para, nextLn} where
   // `para` is the new paragraph (not yet pushed) and `nextLn` is the line
   // its first content line came from, or {defsOnly, nextLn} if only defs
-  // were consumed.
+  // were consumed (or the next line starts a non-paragraph block).
   const startPara = (ln, idx, line) => {
     let curLn = ln;
     let curLine = line;
@@ -1860,6 +1922,24 @@ function parseBlocks(lines, lastNL, refs) {
       curLine = lines[curLn];
       curIdx = 0;
       if (isBlankLine(curLine)) return { defsOnly: true, nextLn: curLn };
+    }
+    // after the definitions, the next line may start a non-paragraph block
+    // (blockquote, heading, code, hr, html, list, table, indented code):
+    // in that case no paragraph starts here
+    if (curLn !== ln) {
+      const ind = scanIndent(curLine, curIdx);
+      let blockStart = false;
+      if (ind.col <= 3 && ind.next < curLine.length && curLine.charCodeAt(ind.next) === 62) blockStart = true;
+      else if (parseATX(curLine, curIdx) || parseFence(curLine, curIdx) || isHR(curLine, curIdx)) blockStart = true;
+      else if (htmlBlockType(curLine, curIdx) >= 1) blockStart = true;
+      else if (parseListMarker(curLine, curIdx)) blockStart = true;
+      else if (ind.col >= 4) blockStart = true;
+      else if (curLn + 1 < lines.length) {
+        const headerCells = splitTableRow(curLine.slice(curIdx));
+        const aligns = parseTableDelimiter(lines[curLn + 1]);
+        if (aligns && aligns.length === headerCells.length) blockStart = true;
+      }
+      if (blockStart) return { defsOnly: true, nextLn: curLn };
     }
     const para = { t: "para", lines: [curLine.slice(curIdx)], hasLazy: false, lastLazyIdx: -1 };
     return { para, nextLn: curLn };
@@ -1891,15 +1971,29 @@ function parseBlocks(lines, lastNL, refs) {
 
   // ---- main loop ----
   let ln = 0;
+  // line number of the most recent blank line (raw or content-blank)
+  let lastBlankLn = -1;
   while (ln < lines.length) {
     const rawLine = lines[ln];
     if (isBlankLine(rawLine)) {
+      lastBlankLn = ln;
       // blank line: close the paragraph / table
       if (leaf && leaf.t === "para") closeLeaf();
       if (leaf && leaf.t === "table") closeLeaf();
-      // mark looseness on the innermost item
-      for (let d = stack.length - 1; d >= 1; d--) {
-        if (stack[d].t === "item") { stack[d].sawBlank = true; break; }
+      // a blank line inside a fenced/indented code block or a type 1-5
+      // HTML block is content, not a separator: it does not loosen a list
+      // (unless it also closes a blockquote, in which case it does)
+      let hasBq = false;
+      for (let d = 1; d < stack.length; d++) {
+        if (stack[d].t === "bq") { hasBq = true; break; }
+      }
+      const inCodeOrHtml = leaf && ((leaf.t === "code") ||
+        (leaf.t === "html" && leaf.type <= 5)) && !hasBq;
+      if (!inCodeOrHtml) {
+        // mark looseness on the innermost item
+        for (let d = stack.length - 1; d >= 1; d--) {
+          if (stack[d].t === "item") { stack[d].sawBlank = true; break; }
+        }
       }
       // a blank line closes all blockquotes (and everything inside them)
       let bqDepth = -1;
@@ -1954,7 +2048,7 @@ function parseBlocks(lines, lastNL, refs) {
       closeTo(depth);
       const list = stack[stack.length - 1];
       const prevItem = list.items[list.items.length - 1];
-      if (prevItem && prevItem.sawBlank) list.loose = true;
+      if (prevItem && (prevItem.sawBlank || lastBlankLn === ln - 1)) list.loose = true;
       const item = { t: "item", children: [], contentIndent: marker.contentIndent, sawBlank: false };
       list.items.push(item);
       stack.push(item);
@@ -1970,13 +2064,98 @@ function parseBlocks(lines, lastNL, refs) {
       continue;
     }
 
+    // a line whose content (after container matching) is blank: an empty
+    // content closes the paragraph/table; a whitespace-only content is
+    // appended to an open paragraph, otherwise ignored (it never starts
+    // a paragraph on its own)
+    if (m.firstFailure === -1) {
+      let blank = true;
+      let empty = idx >= line.length;
+      for (let k = idx; k < line.length; k++) {
+        const c = line.charCodeAt(k);
+        if (c !== 32 && c !== 9) { blank = false; break; }
+      }
+      if (blank) {
+        if (leaf && leaf.t === "para" && !empty) {
+          // whitespace-only content continues the paragraph as a line
+          lazyAppend(leaf, line.slice(idx));
+          ln++;
+          continue;
+        }
+        if (leaf && leaf.t === "para") closeLeaf();
+        if (leaf && leaf.t === "table") closeLeaf();
+        // a blank line inside a nested container does not loosen the item;
+        // it only counts when the innermost container is the item itself
+        if (stack[stack.length - 1].t === "item") {
+          stack[stack.length - 1].sawBlank = true;
+          lastBlankLn = ln;
+        }
+        if (leaf && leaf.t === "code" && !leaf.indented) {
+          const adv = advanceCols(line, idx, leaf.fenceIndent);
+          let text = line.slice(adv.idx);
+          if (adv.partial > 0) {
+            const col = colAt(line, adv.idx);
+            const r = expandPartialTab(line, adv.idx, col, adv.partial);
+            text = r.line.slice(r.idx);
+          }
+          codeAppend(leaf, text, ln);
+        } else if (leaf && leaf.t === "code" && leaf.indented) {
+          const adv = advanceCols(line, idx, 4);
+          let text = line.slice(adv.idx);
+          if (adv.partial > 0) {
+            const col = colAt(line, adv.idx);
+            const r = expandPartialTab(line, adv.idx, col, adv.partial);
+            text = r.line.slice(r.idx);
+          }
+          leaf.pendingBlanks.push(text);
+        } else if (leaf && leaf.t === "html" && leaf.type <= 5) {
+          htmlAppend(leaf, line.slice(idx), ln);
+        } else if (leaf && leaf.t === "html" && leaf.type >= 6) {
+          if (leaf.raw.endsWith("\n")) leaf.raw = leaf.raw.slice(0, -1);
+          closeLeaf();
+        }
+        ln++;
+        continue;
+      }
+    }
+
     if (m.firstFailure !== -1) {
       // some containers failed to match
       const failIdx = m.failIdx;
+      // a blank line from the failure cursor closes the failed containers
+      // (but not a list item) and the open paragraph/table
+      let failBlank = true;
+      for (let k = failIdx; k < line.length; k++) {
+        const c = line.charCodeAt(k);
+        if (c !== 32 && c !== 9) { failBlank = false; break; }
+      }
+      if (failBlank) {
+        if (leaf && leaf.t === "para") closeLeaf();
+        if (leaf && leaf.t === "table") closeLeaf();
+        for (let d = stack.length - 1; d >= 1; d--) {
+          if (stack[d].t === "item") { stack[d].sawBlank = true; break; }
+        }
+        lastBlankLn = ln;
+        const failed = stack[m.firstFailure];
+        if (failed.t === "item" || failed.t === "list") {
+          // keep the item/list, drop anything inside it
+          while (stack.length > m.firstFailure + 1) stack.pop();
+        } else {
+          // drop the failed container and everything inside it
+          while (stack.length > m.firstFailure) stack.pop();
+        }
+        leaf = null;
+        ln++;
+        continue;
+      }
       // lazy continuation?
       if (leaf && leaf.t === "para") {
         const ik = interruptKind(line, failIdx, true);
-        if (!ik) {
+        // an ordered list marker with start != 1 at the failure cursor
+        // still starts a new list (the paragraph's container has failed)
+        const lm = !ik ? parseListMarker(line, failIdx) : null;
+        const newList = lm && lm.ordered && !lm.empty && !isHR(line, failIdx);
+        if (!ik && !newList) {
           // lazy line: the FIRST lazy line strips 4 columns if its indent
           // is >= 4; later lazy lines are verbatim, except a setext
           // underline inside a blockquote gets 4 spaces (replacing its
