@@ -1017,7 +1017,7 @@ function inlineParse(src, refs) {
     const cl = delims[ci];
     if (!cl.active || cl.len === 0 || !cl.close) continue;
     while (cl.len > 0) {
-      let opener = null;
+      let opener = null, openerIdx = -1;
       for (let oi = ci - 1; oi >= 0; oi--) {
         const op = delims[oi];
         if (!op.active || op.len === 0 || op.ch !== cl.ch || !op.open) continue;
@@ -1059,6 +1059,7 @@ function inlineParse(src, refs) {
           if (blocked) continue;
         }
         opener = op;
+        openerIdx = oi;
         break;
       }
       if (!opener) break;
@@ -1068,9 +1069,9 @@ function inlineParse(src, refs) {
       // Delimiters between the opener and closer are now inside this
       // span; they cannot match a delimiter outside it (innermost wins).
       spanSeq++;
-      for (let d = 0; d < delims.length; d++) {
+      for (let d = openerIdx + 1; d < ci; d++) {
         const dm = delims[d];
-        if (!dm.span && dm.pos > opener.pos && dm.pos < cl.pos) dm.span = spanSeq;
+        if (!dm.span) dm.span = spanSeq;
       }
       opener.lit = opener.lit.slice(0, opener.len - use);
       opener.tags = '<' + tag + '>' + opener.tags;
@@ -1148,6 +1149,7 @@ function paraBlank(ln) {
 // Strip up to n columns of leading whitespace. A tab straddling the
 // boundary is replaced by spaces for the remainder, unless dropPad.
 function stripCols(ln, n, dropPad) {
+  if (n <= 0) return ln;
   const s = ln.s;
   let col = ln.c, pos = 0, pad = 0;
   while (pos < s.length && col - ln.c < n) {
@@ -1159,7 +1161,8 @@ function stripCols(ln, n, dropPad) {
       else { pad = dropPad ? 0 : nt - (ln.c + n); col = ln.c + n; pos++; }
     } else break;
   }
-  return { s: ' '.repeat(pad) + s.slice(pos), c: col, used: col - ln.c, eol: ln.eol };
+  if (pos === 0 && pad === 0) return ln;
+  return { s: ' '.repeat(pad) + s.slice(pos), c: col, eol: ln.eol, lazy: ln.lazy, nestedList: ln.nestedList };
 }
 
 function lineIndent(ln) {
@@ -1543,7 +1546,7 @@ function bqMatch(ln) {
     else break;
   }
   const remaining = ws > 0 ? ws - 1 : 0;
-  return { s: ' '.repeat(remaining) + s.slice(pos), c: ln.c + ind.indent + 1, eol: ln.eol };
+  return { s: ' '.repeat(remaining) + s.slice(pos), c: ln.c + ind.indent + 1, eol: ln.eol, lazy: false, nestedList: false };
 }
 
 function listMatch(ln) {
@@ -1566,7 +1569,7 @@ function listMatch(ln) {
   const markerEnd = pos;
   const mw = (markerEnd - ind.pos) + ind.indent;
   if (markerEnd >= s.length) {
-    return { bullet, ordered, delim, num, markerWidth: mw, contentIndent: mw + 1, content: { s: '', c: ln.c + mw + 1, eol: ln.eol }, empty: true };
+    return { bullet, ordered, delim, num, markerWidth: mw, contentIndent: mw + 1, content: { s: '', c: ln.c + mw + 1, eol: ln.eol, lazy: false, nestedList: false }, empty: true };
   }
   const w = s.charCodeAt(markerEnd);
   if (w !== 32 && w !== 9) return null;
@@ -1579,16 +1582,16 @@ function listMatch(ln) {
     p++;
   }
   if (p >= s.length) {
-    return { bullet, ordered, delim, num, markerWidth: mw, contentIndent: mw + 1, content: { s: '', c: ln.c + mw + 1, eol: ln.eol }, empty: true };
+    return { bullet, ordered, delim, num, markerWidth: mw, contentIndent: mw + 1, content: { s: '', c: ln.c + mw + 1, eol: ln.eol, lazy: false, nestedList: false }, empty: true };
   }
   let contentIndent, content;
   if (ws >= 5) {
     // content starts 1 column after the marker; the rest of the expanded
     // whitespace is content
-    content = { s: ' '.repeat(ws - 1) + s.slice(p), c: markerCol + 1, eol: ln.eol };
+    content = { s: ' '.repeat(ws - 1) + s.slice(p), c: markerCol + 1, eol: ln.eol, lazy: false, nestedList: false };
     contentIndent = mw + 1;
   } else {
-    content = { s: s.slice(p), c: col, eol: ln.eol };
+    content = { s: s.slice(p), c: col, eol: ln.eol, lazy: false, nestedList: false };
     contentIndent = col - ln.c;
   }
   return { bullet, ordered, delim, num, markerWidth: mw, contentIndent, content, empty: false };
@@ -1731,11 +1734,11 @@ function trimParaEdges(rest) {
   const first = out[0];
   let p = 0;
   while (p < first.s.length && (first.s.charCodeAt(p) === 32 || first.s.charCodeAt(p) === 9)) p++;
-  if (p > 0) out[0] = { s: first.s.slice(p), c: first.c + p, eol: first.eol };
+  if (p > 0) out[0] = { s: first.s.slice(p), c: first.c + p, eol: first.eol, lazy: first.lazy, nestedList: first.nestedList };
   const last = out[out.length - 1];
   let e = last.s.length;
   while (e > 0 && (last.s.charCodeAt(e - 1) === 32 || last.s.charCodeAt(e - 1) === 9)) e--;
-  if (e < last.s.length) out[out.length - 1] = { s: last.s.slice(0, e), c: last.c, eol: last.eol };
+  if (e < last.s.length) out[out.length - 1] = { s: last.s.slice(0, e), c: last.c, eol: last.eol, lazy: last.lazy, nestedList: last.nestedList };
   return out;
 }
 
@@ -1968,11 +1971,11 @@ function handleBlock(lines, i, bs, refs, collect, tight) {
             if (lastLazy && setextLevel(content) === 1) {
               let p = 0;
               while (p < content.s.length && (content.s.charCodeAt(p) === 32 || content.s.charCodeAt(p) === 9)) p++;
-              content = { s: '    ' + content.s.slice(p), c: content.c, eol: content.eol };
+              content = { s: '    ' + content.s.slice(p), c: content.c, eol: content.eol, lazy: content.lazy, nestedList: content.nestedList };
             }
             // Mark the line lazy (a copy, never the original): inside the
             // quote it is always a paragraph continuation, never a block.
-            sub.push({ s: content.s, c: content.c, eol: content.eol, lazy: true });
+            sub.push({ s: content.s, c: content.c, eol: content.eol, lazy: true, nestedList: content.nestedList });
             lastLazy = true;
             j++;
             continue;
@@ -1999,9 +2002,7 @@ function handleBlock(lines, i, bs, refs, collect, tight) {
 function expandLeadingTab(ln) {
   if (ln.s.charCodeAt(0) !== 9) return ln;
   const spaces = 4 - (ln.c % 4);
-  const out = { s: ' '.repeat(spaces) + ln.s.slice(1), c: ln.c + spaces, eol: ln.eol };
-  if (ln.lazy) out.lazy = true;
-  return out;
+  return { s: ' '.repeat(spaces) + ln.s.slice(1), c: ln.c + spaces, eol: ln.eol, lazy: ln.lazy, nestedList: ln.nestedList };
 }
 
 function collectItem(lines, j, lm) {
@@ -2129,7 +2130,7 @@ export function parse(markdown) {
   const lines = raw.map(s => {
     let t = s;
     if (t.endsWith('\r')) t = t.slice(0, -1);
-    return { s: t, c: 0, eol: true };
+    return { s: t, c: 0, eol: true, lazy: false, nestedList: false };
   });
   if (lines.length) lines[lines.length - 1].eol = src.endsWith('\n');
   const refs = new Map();
