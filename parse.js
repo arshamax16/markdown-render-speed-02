@@ -510,7 +510,7 @@ function inlineParse(src, refs) {
     flush();
     out.push(ch.repeat(runLen));
     kind.push(1);
-    delims.push({ ch: ch.charCodeAt(0), len: runLen, idx: out.length - 1, open, close, active: true, lit: ch.repeat(runLen), tags: '', pos, link: 0, span: 0 });
+    delims.push({ ch: ch.charCodeAt(0), len: runLen, idx: out.length - 1, open, close, active: true, lit: ch.repeat(runLen), tags: '', pos, end: pos + runLen, link: 0, span: 0 });
   }
 
   // Find a closing backtick run of exactly k starting the scan at j.
@@ -1009,6 +1009,10 @@ function inlineParse(src, refs) {
   flush();
 
   // Emphasis / strikethrough resolution over the delimiter stack.
+  // Formed '**' strongs, recorded as {openStart, closeEnd} src positions,
+  // for the rule that a single-'*' em enclosing a space-preceded strong
+  // followed by text does not form.
+  const strongs = [];
   for (let ci = 0; ci < delims.length; ci++) {
     const cl = delims[ci];
     if (!cl.active || cl.len === 0 || !cl.close) continue;
@@ -1037,12 +1041,30 @@ function inlineParse(src, refs) {
         if ((op.close || cl.open) && (op.len + cl.len) % 3 === 0 && op.len % 3 !== 0) continue;
         // Tildes match only equal-length runs (1 with 1, 2 with 2).
         if (cl.ch === 126 && op.len !== cl.len) continue;
+        // A single-'*' em does not form when it encloses a '**' strong
+        // that is preceded by whitespace and followed by non-whitespace
+        // text (the strong itself still forms).
+        if (cl.ch === 42 && !(op.len >= 2 && cl.len >= 2)) {
+          let blocked = false;
+          for (let s = 0; s < strongs.length; s++) {
+            const st = strongs[s];
+            if (st.openStart > op.pos && st.closeEnd <= cl.pos) {
+              const before = st.openStart - 1 >= 0 ? src.charCodeAt(st.openStart - 1) : 32;
+              const after = st.closeEnd < src.length ? src.charCodeAt(st.closeEnd) : 32;
+              // 'followed by text' means a non-whitespace char that is not
+              // itself an emphasis delimiter (* or _).
+              if ((before === 32 || before === 9 || before === 10) && after !== 32 && after !== 9 && after !== 10 && after !== 42 && after !== 95) { blocked = true; break; }
+            }
+          }
+          if (blocked) continue;
+        }
         opener = op;
         break;
       }
       if (!opener) break;
       const use = cl.ch === 126 ? opener.len : (opener.len >= 2 && cl.len >= 2 ? 2 : 1);
       const tag = cl.ch === 126 ? 'del' : (use === 2 ? 'strong' : 'em');
+      if (cl.ch === 42 && use === 2) strongs.push({ openStart: opener.pos + opener.len - use, closeEnd: cl.end - cl.len + use });
       // Delimiters between the opener and closer are now inside this
       // span; they cannot match a delimiter outside it (innermost wins).
       spanSeq++;
