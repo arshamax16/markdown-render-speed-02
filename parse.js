@@ -1082,10 +1082,31 @@ function inlineParse(src, refs) {
       opener.tags = '<' + tag + '>' + opener.tags;
       opener.len -= use;
       out[opener.idx] = opener.lit + opener.tags;
-      cl.lit = cl.lit.slice(use);
-      cl.tags = cl.tags + '</' + tag + '>';
-      cl.len -= use;
-      out[cl.idx] = cl.tags + cl.lit;
+      // A closer run with leftover: when the immediately preceding
+      // delimiter is a consumed '*' closer directly followed by
+      // non-whitespace text, the leftover goes inside the tag (before
+      // the closing tag); otherwise it goes after it.
+      // (**a *b*two*** -> two* inside; **a *b* two*** -> * outside.)
+      let leftoverInside = false;
+      if (cl.ch === 42 && use === 2 && cl.len > use && ci - 1 >= 0) {
+        const pd = delims[ci - 1];
+        if (pd.ch === 42 && pd.close && !pd.active) {
+          const afterPrev = pd.end < src.length ? src.charCodeAt(pd.end) : 32;
+          if (afterPrev !== 32 && afterPrev !== 9 && afterPrev !== 10) leftoverInside = true;
+        }
+      }
+      if (leftoverInside) {
+        const leftover = cl.lit.slice(0, cl.len - use);
+        cl.tags = cl.tags + '</' + tag + '>';
+        out[cl.idx] = leftover + cl.tags;
+        cl.lit = '';
+        cl.len = 0;
+      } else {
+        cl.lit = cl.lit.slice(use);
+        cl.tags = cl.tags + '</' + tag + '>';
+        cl.len -= use;
+        out[cl.idx] = cl.tags + cl.lit;
+      }
       if (opener.len === 0) opener.active = false;
       if (cl.len === 0) { cl.active = false; break; }
     }
