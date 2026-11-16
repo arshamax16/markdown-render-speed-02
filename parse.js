@@ -465,7 +465,13 @@ function matchExtended(s, i, prev) {
           break;
         }
         const domain = s.slice(ds, p);
-        if (p > ds && domain.indexOf('.') >= 0 && domain.indexOf('..') < 0) {
+        let labelsOk = p > ds && domain.indexOf('.') >= 0 && domain.indexOf('..') < 0;
+        if (labelsOk) {
+          for (const lab of domain.split('.')) {
+            if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(lab)) { labelsOk = false; break; }
+          }
+        }
+        if (labelsOk) {
           if (!isXmpp) {
             let url = s.slice(i, p);
             url = trimAutolink(url);
@@ -680,6 +686,8 @@ function matchEmailAt(s, runStart, at) {
 function matchTag(s, i) {
   const n = s.length;
   if (s.startsWith('<!--', i)) {
+    if (s.charCodeAt(i + 4) === 62) return { end: i + 5, selfClose: false, tagName: null, isClose: false }; // <!-->
+    if (s.charCodeAt(i + 4) === 45 && s.charCodeAt(i + 5) === 62) return { end: i + 6, selfClose: false, tagName: null, isClose: false }; // <!-->
     const e = s.indexOf('-->', i + 4);
     if (e < 0) return null;
     return { end: e + 3, selfClose: false, tagName: null, isClose: false };
@@ -718,10 +726,18 @@ function matchTag(s, i) {
     else break;
   }
   const tagName = s.slice(nameStart, p).toLowerCase();
-  // attributes
+  if (isClose) {
+    // a close tag has no attributes: only whitespace then '>'
+    while (p < n && isSpaceCode(s.charCodeAt(p))) p++;
+    if (p >= n || s.charCodeAt(p) !== 62) return null;
+    return { end: p + 1, selfClose: false, tagName, isClose };
+  }
+  // attributes (each needs whitespace before it: <m:abc> and
+  // <a href='bar'title=title> are not tags)
   let selfClose = false;
   for (;;) {
-    while (p < n && isSpaceCode(s.charCodeAt(p))) p++;
+    let hadSpace = false;
+    while (p < n && isSpaceCode(s.charCodeAt(p))) { hadSpace = true; p++; }
     if (p >= n) return null;
     const c = s.charCodeAt(p);
     if (c === 62) { p++; break; }
@@ -729,6 +745,7 @@ function matchTag(s, i) {
       if (s.charCodeAt(p + 1) === 62) { selfClose = true; p += 2; break; }
       return null;
     }
+    if (!hadSpace) return null;
     // attribute name
     const a0 = s.charCodeAt(p);
     if (!((a0 >= 65 && a0 <= 90) || (a0 >= 97 && a0 <= 122) || a0 === 95 || a0 === 58)) return null;
@@ -738,9 +755,12 @@ function matchTag(s, i) {
       if ((d >= 48 && d <= 57) || (d >= 65 && d <= 90) || (d >= 97 && d <= 122) || d === 95 || d === 58 || d === 46 || d === 45) p++;
       else break;
     }
-    while (p < n && isSpaceCode(s.charCodeAt(p))) p++;
-    if (p < n && s.charCodeAt(p) === 61) {
-      p++;
+    // Peek past spaces for '=': only consume them when a value follows,
+    // else they are the separator before the next attribute.
+    let q1 = p;
+    while (q1 < n && isSpaceCode(s.charCodeAt(q1))) q1++;
+    if (q1 < n && s.charCodeAt(q1) === 61) {
+      p = q1 + 1;
       while (p < n && isSpaceCode(s.charCodeAt(p))) p++;
       if (p >= n) return null;
       const q = s.charCodeAt(p);
@@ -2046,9 +2066,16 @@ function parseParagraph(lines, i, b, st, inList) {
       let j = i + 2;
       while (j < b) {
         const line = lines[j];
-        if (isBlankLine(line)) break;
+        // A line of exactly [ ]?\t is an empty table row, not a blank line
+        // (and not indented code, though a tab is 4 columns wide).
+        const isTabRow = /^ ?\t$/.test(line);
+        if (isBlankLine(line) && !isTabRow) break;
         const ind = indentOf(line);
         if (ind.cols <= 3 && line.slice(ind.pos).charCodeAt(0) === 62) break; // '>'
+        // A block-start line ends the table (only plain text is a row).
+        if (!isTabRow && ind.cols >= 4) break; // indented code
+        if (!isTabRow && (matchFence(line, ind) || matchAtx(line, ind) || isHrLine(line, ind) ||
+            parseMarker(line, ind) || matchBQ(line, ind) !== null || matchHtmlBlock(line, ind))) break;
         let cells = splitTableRow(line);
         while (cells.length < cols) cells.push('');
         cells = cells.slice(0, cols);
